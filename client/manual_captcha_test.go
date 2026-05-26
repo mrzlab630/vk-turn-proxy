@@ -63,3 +63,39 @@ func TestRewriteProxyRedirectLocation(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSafeGenericProxyTarget(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		rawURL string
+		want   bool
+	}{
+		{name: "allows public https host", rawURL: "https://id.vk.ru/captcha.js", want: true},
+		{name: "allows public http host", rawURL: "http://vk.com/assets/app.js", want: true},
+		{name: "blocks javascript scheme", rawURL: "javascript:alert(1)", want: false},
+		{name: "blocks localhost", rawURL: "http://localhost:8080/admin", want: false},
+		{name: "blocks localhost suffix", rawURL: "http://app.localhost:8080/admin", want: false},
+		{name: "blocks loopback ip", rawURL: "http://127.0.0.1:8080/admin", want: false},
+		{name: "blocks ipv4-mapped loopback ip", rawURL: "http://[::ffff:127.0.0.1]:8080/admin", want: false},
+		{name: "blocks private ip", rawURL: "http://192.168.1.1/admin", want: false},
+		{name: "blocks link local ip", rawURL: "http://169.254.1.1/admin", want: false},
+		{name: "blocks unspecified ip", rawURL: "http://0.0.0.0/admin", want: false},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			parsed, err := url.Parse(tc.rawURL)
+			if err != nil {
+				t.Fatalf("failed to parse test URL: %v", err)
+			}
+			if got := isSafeGenericProxyTarget(parsed); got != tc.want {
+				t.Fatalf("isSafeGenericProxyTarget(%q) = %v, want %v", tc.rawURL, got, tc.want)
+			}
+		})
+	}
+}

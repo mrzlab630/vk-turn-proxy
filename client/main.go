@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -295,12 +296,7 @@ func ParseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {
 	}
 	code := int(codeFloat)
 
-	// Extract redirect_uri
-	RedirectURI, ok := errData["redirect_uri"].(string)
-	if !ok {
-		log.Printf("missing redirect_uri in captcha error data")
-		return nil
-	}
+	redirectURI, _ := errData["redirect_uri"].(string)
 
 	// Extract captcha_sid
 	captchaSid, ok := errData["captcha_sid"].(string)
@@ -314,12 +310,8 @@ func ParseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {
 		}
 	}
 
-	// Extract captcha_img
-	captchaImg, ok := errData["captcha_img"].(string)
-	if !ok {
-		log.Printf("missing captcha_img in captcha error data")
-		return nil
-	}
+	// redirect_uri based captcha does not always include captcha_img.
+	captchaImg, _ := errData["captcha_img"].(string)
 
 	// Extract error_msg
 	errorMsg, ok := errData["error_msg"].(string)
@@ -330,8 +322,8 @@ func ParseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {
 
 	// Extract session token if redirect_uri present
 	var sessionToken string
-	if RedirectURI != "" {
-		if parsed, err := neturl.Parse(RedirectURI); err == nil {
+	if redirectURI != "" {
+		if parsed, err := neturl.Parse(redirectURI); err == nil {
 			sessionToken = parsed.Query().Get("session_token")
 		} else {
 			log.Printf("failed to parse redirect_uri: %v", err)
@@ -367,7 +359,7 @@ func ParseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {
 		ErrorMsg:                errorMsg,
 		CaptchaSid:              captchaSid,
 		CaptchaImg:              captchaImg,
-		RedirectURI:             RedirectURI,
+		RedirectURI:             redirectURI,
 		IsSoundCaptchaAvailable: isSound,
 		SessionToken:            sessionToken,
 		CaptchaTs:               captchaTs,
@@ -376,7 +368,7 @@ func ParseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {
 }
 
 func (e *VkCaptchaError) IsCaptchaError() bool {
-	return e.ErrorCode == 14 && e.RedirectURI != "" && e.SessionToken != ""
+	return e.ErrorCode == 14 && ((e.RedirectURI != "" && e.SessionToken != "") || e.CaptchaImg != "")
 }
 
 func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID int, client tlsclient.HttpClient, profile Profile, useSliderPOC bool) (string, error) {
@@ -969,9 +961,9 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 						var t, k string
 						var e error
 						if captchaErr.RedirectURI != "" {
-							t, e = solveCaptchaViaProxy(captchaErr.RedirectURI, dialer)
+							t, e = solveCaptchaViaProxy(manualCtx, captchaErr.RedirectURI, dialer)
 						} else if captchaErr.CaptchaImg != "" {
-							k, e = solveCaptchaViaHTTP(captchaErr.CaptchaImg)
+							k, e = solveCaptchaViaHTTP(manualCtx, captchaErr.CaptchaImg)
 						} else {
 							e = fmt.Errorf("no redirect_uri or captcha_img")
 						}
@@ -1531,75 +1523,71 @@ type turnParams struct {
 	getCreds getCredsFunc
 }
 
-func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UDPAddr, conn2 net.PacketConn, streamID int, c chan<- error) {
-	time.Sleep(time.Duration(rand.Intn(400)+100) * time.Millisecond)
-	var err error
-	defer func() { c <- err }()
-	user, pass, urlTarget, err1 := turnParams.getCreds(ctx, turnParams.link, streamID)
-	if err1 != nil {
-		err = fmt.Errorf("failed to get TURN credentials: %s", err1)
-		return
+type turnRelaySession struct {
+	relayConn      net.PacketConn
+	client         *turn.Client
+	closeTransport func() error
+}
+
+func (s *turnRelaySession) close() error {
+	if s == nil {
+		return nil
 	}
-	urlhost, urlport, err1 := net.SplitHostPort(urlTarget)
-	if err1 != nil {
-		err = fmt.Errorf("failed to parse TURN server address: %s", err1)
-		return
+
+	var errs []error
+	if s.relayConn != nil {
+		if err := s.relayConn.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	if turnParams.host != "" {
-		urlhost = turnParams.host
+	if s.client != nil {
+		s.client.Close()
 	}
-	if turnParams.port != "" {
-		urlport = turnParams.port
+	if s.closeTransport != nil {
+		if err := s.closeTransport(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	var turnServerAddr string
-	turnServerAddr = net.JoinHostPort(urlhost, urlport)
-	turnServerUDPAddr, err1 := net.ResolveUDPAddr("udp", turnServerAddr)
-	if err1 != nil {
-		err = fmt.Errorf("failed to resolve TURN server address: %s", err1)
-		return
+	return errors.Join(errs...)
+}
+
+func createTURNRelaySession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, streamID int) (*turnRelaySession, error) {
+	user, pass, urlTarget, err := tp.getCreds(ctx, tp.link, streamID)
+	if err != nil {
+		return nil, fmt.Errorf("get TURN credentials: %w", err)
+	}
+
+	urlhost, urlport, err := net.SplitHostPort(urlTarget)
+	if err != nil {
+		return nil, fmt.Errorf("parse TURN server address: %w", err)
+	}
+	if tp.host != "" {
+		urlhost = tp.host
+	}
+	if tp.port != "" {
+		urlport = tp.port
+	}
+
+	turnServerAddr := net.JoinHostPort(urlhost, urlport)
+	turnServerUDPAddr, err := net.ResolveUDPAddr("udp", turnServerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("resolve TURN server address: %w", err)
 	}
 	turnServerAddr = turnServerUDPAddr.String()
 	fmt.Println(turnServerUDPAddr.IP)
-	var cfg *turn.ClientConfig
-	var turnConn net.PacketConn
-	var d net.Dialer
-	ctx1, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if turnParams.udp {
-		conn, err2 := net.DialUDP("udp", nil, turnServerUDPAddr) // nolint: noctx
-		if err2 != nil {
-			err = fmt.Errorf("failed to connect to TURN server: %s", err2)
-			return
-		}
-		defer func() {
-			if err1 = conn.Close(); err1 != nil {
-				err = fmt.Errorf("failed to close TURN server connection: %s", err1)
-				return
-			}
-		}()
-		turnConn = &connectedUDPConn{conn}
-	} else {
-		conn, err2 := d.DialContext(ctx1, "tcp", turnServerAddr)
-		if err2 != nil {
-			err = fmt.Errorf("failed to connect to TURN server: %s", err2)
-			return
-		}
-		defer func() {
-			if err1 = conn.Close(); err1 != nil {
-				err = fmt.Errorf("failed to close TURN server connection: %s", err1)
-				return
-			}
-		}()
-		turnConn = turn.NewSTUNConn(conn)
+
+	turnConn, closeTransport, err := dialTURNTransport(ctx, tp.udp, turnServerUDPAddr)
+	if err != nil {
+		return nil, err
 	}
-	var addrFamily turn.RequestedAddressFamily
+	session := &turnRelaySession{closeTransport: closeTransport}
+
+	addrFamily := turn.RequestedAddressFamilyIPv6
 	if peer.IP.To4() != nil {
 		addrFamily = turn.RequestedAddressFamilyIPv4
-	} else {
-		addrFamily = turn.RequestedAddressFamilyIPv6
 	}
 
-	cfg = &turn.ClientConfig{
+	cfg := &turn.ClientConfig{
 		STUNServerAddr:         turnServerAddr,
 		TURNServerAddr:         turnServerAddr,
 		Conn:                   turnConn,
@@ -1610,27 +1598,60 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 		LoggerFactory:          logging.NewDefaultLoggerFactory(),
 	}
 
-	client, err1 := turn.NewClient(cfg)
-	if err1 != nil {
-		err = fmt.Errorf("failed to create TURN client: %s", err1)
-		return
+	turnClient, err := turn.NewClient(cfg)
+	if err != nil {
+		_ = session.close()
+		return nil, fmt.Errorf("create TURN client: %w", err)
 	}
-	defer client.Close()
+	session.client = turnClient
 
-	err1 = client.Listen()
-	if err1 != nil {
-		err = fmt.Errorf("failed to listen: %s", err1)
-		return
+	if err = turnClient.Listen(); err != nil {
+		_ = session.close()
+		return nil, fmt.Errorf("TURN listen: %w", err)
 	}
 
-	relayConn, err1 := client.Allocate()
+	relayConn, err := turnClient.Allocate()
+	if err != nil {
+		_ = session.close()
+		return nil, fmt.Errorf("TURN allocate: %w", err)
+	}
+	session.relayConn = relayConn
+
+	return session, nil
+}
+
+func dialTURNTransport(ctx context.Context, useUDP bool, turnServerUDPAddr *net.UDPAddr) (net.PacketConn, func() error, error) {
+	if useUDP {
+		conn, err := net.DialUDP("udp", nil, turnServerUDPAddr) // nolint: noctx
+		if err != nil {
+			return nil, nil, fmt.Errorf("connect to TURN server over UDP: %w", err)
+		}
+		return &connectedUDPConn{conn}, conn.Close, nil
+	}
+
+	ctx1, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var d net.Dialer
+	conn, err := d.DialContext(ctx1, "tcp", turnServerUDPAddr.String())
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect to TURN server over TCP: %w", err)
+	}
+	return turn.NewSTUNConn(conn), conn.Close, nil
+}
+
+func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UDPAddr, conn2 net.PacketConn, streamID int, c chan<- error) {
+	time.Sleep(time.Duration(rand.Intn(400)+100) * time.Millisecond)
+	var err error
+	defer func() { c <- err }()
+	turnSession, err1 := createTURNRelaySession(ctx, turnParams, peer, streamID)
 	if err1 != nil {
 		if isAuthError(err1) {
 			handleAuthError(streamID)
 		}
-		err = fmt.Errorf("failed to allocate: %s", err1)
+		err = err1
 		return
 	}
+	relayConn := turnSession.relayConn
 
 	// Reset error count on successful allocation
 	getStreamCache(streamID).errorCount.Store(0)
@@ -1639,8 +1660,8 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 	connectedStreams.Add(1)
 	defer func() {
 		connectedStreams.Add(-1)
-		if err1 := relayConn.Close(); err1 != nil {
-			err = fmt.Errorf("failed to close TURN allocated connection: %s", err1)
+		if err1 := turnSession.close(); err1 != nil {
+			err = errors.Join(err, fmt.Errorf("close TURN relay session: %w", err1))
 		}
 	}()
 
@@ -1655,7 +1676,7 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 		if err := relayConn.SetDeadline(time.Now()); err != nil {
 			log.Printf("Failed to set relay deadline: %s", err)
 		}
-		// Do not set conn2 deadline (conn2 can sometimes be listenConn if direct mode is used)
+		// Do not set conn2 deadline; it belongs to the DTLS packet pipe.
 	})
 	var internalPipeAddr atomic.Value
 
@@ -1808,7 +1829,6 @@ func main() {
 	peerAddr := flag.String("peer", "", "peer server address (host:port)")
 	n := flag.Int("n", 0, "connections to TURN (default 10 for VK, 1 for Yandex)")
 	udp := flag.Bool("udp", false, "connect to TURN with UDP")
-	direct := flag.Bool("no-dtls", false, "connect without obfuscation. DO NOT USE")
 	vlessMode := flag.Bool("vless", false, "VLESS mode: forward TCP connections (for VLESS) instead of UDP packets")
 	debugFlag := flag.Bool("debug", false, "enable debug logging")
 	manualCaptchaFlag := flag.Bool("manual-captcha", false, "skip auto captcha solving, use manual mode immediately")
@@ -1929,10 +1949,6 @@ func main() {
 
 	wg1 := sync.WaitGroup{}
 	t := time.Tick(200 * time.Millisecond)
-
-	if *direct {
-		log.Panicf("Direct mode not supported with dispatcher")
-	}
 
 	okchan := make(chan struct{})
 	connchan := make(chan net.PacketConn)
@@ -2142,86 +2158,16 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 		}
 	}
 
-	// 1. Get TURN credentials
-	user, pass, rawURL, err := tp.getCreds(ctx, tp.link, id)
+	// 1. Create TURN client and allocate relay.
+	turnSession, err := createTURNRelaySession(ctx, tp, peer, id)
 	if err != nil {
-		return nil, nil, fmt.Errorf("get TURN creds: %w", err)
+		return nil, nil, err
 	}
-	urlhost, urlport, err := net.SplitHostPort(rawURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse TURN addr: %w", err)
-	}
-	if tp.host != "" {
-		urlhost = tp.host
-	}
-	if tp.port != "" {
-		urlport = tp.port
-	}
-	turnServerAddr := net.JoinHostPort(urlhost, urlport)
-	turnServerUDPAddr, err := net.ResolveUDPAddr("udp", turnServerAddr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("resolve TURN addr: %w", err)
-	}
-	turnServerAddr = turnServerUDPAddr.String()
-	fmt.Println(turnServerUDPAddr.IP)
-
-	// 2. Connect to TURN server
-	var turnConn net.PacketConn
-	ctx1, cancel1 := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel1()
-	if tp.udp {
-		c, err1 := net.DialUDP("udp", nil, turnServerUDPAddr)
-		if err1 != nil {
-			return nil, nil, fmt.Errorf("dial TURN (udp): %w", err1)
-		}
-		cleanupFns = append(cleanupFns, func() { _ = c.Close() })
-		turnConn = &connectedUDPConn{c}
-	} else {
-		var d net.Dialer
-		c, err1 := d.DialContext(ctx1, "tcp", turnServerAddr)
-		if err1 != nil {
-			return nil, nil, fmt.Errorf("dial TURN (tcp): %w", err1)
-		}
-		cleanupFns = append(cleanupFns, func() { _ = c.Close() })
-		turnConn = turn.NewSTUNConn(c)
-	}
-
-	// 3. Create TURN client and allocate relay
-	var addrFamily turn.RequestedAddressFamily
-	if peer.IP.To4() != nil {
-		addrFamily = turn.RequestedAddressFamilyIPv4
-	} else {
-		addrFamily = turn.RequestedAddressFamilyIPv6
-	}
-	cfg := &turn.ClientConfig{
-		STUNServerAddr:         turnServerAddr,
-		TURNServerAddr:         turnServerAddr,
-		Conn:                   turnConn,
-		Net:                    newDirectNet(),
-		Username:               user,
-		Password:               pass,
-		RequestedAddressFamily: addrFamily,
-		LoggerFactory:          logging.NewDefaultLoggerFactory(),
-	}
-	turnClient, err := turn.NewClient(cfg)
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("create TURN client: %w", err)
-	}
-	cleanupFns = append(cleanupFns, func() { turnClient.Close() })
-	if err = turnClient.Listen(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("TURN listen: %w", err)
-	}
-	relayConn, err := turnClient.Allocate()
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("TURN allocate: %w", err)
-	}
-	cleanupFns = append(cleanupFns, func() { _ = relayConn.Close() })
+	cleanupFns = append(cleanupFns, func() { _ = turnSession.close() })
+	relayConn := turnSession.relayConn
 	log.Printf("relayed-address=%s", relayConn.LocalAddr().String())
 
-	// 4. Establish DTLS over TURN relay
+	// 2. Establish DTLS over TURN relay.
 	certificate, err := selfsign.GenerateSelfSigned()
 	if err != nil {
 		cleanup()
@@ -2249,7 +2195,7 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 	cleanupFns = append(cleanupFns, func() { _ = dtlsConn.Close() })
 	log.Printf("DTLS connection established")
 
-	// 5. Create KCP session over DTLS
+	// 3. Create KCP session over DTLS.
 	kcpSess, err := tcputil.NewKCPOverDTLS(dtlsConn, false)
 	if err != nil {
 		cleanup()
@@ -2258,7 +2204,7 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 	cleanupFns = append(cleanupFns, func() { _ = kcpSess.Close() })
 	log.Printf("KCP session established")
 
-	// 6. Create smux client session over KCP
+	// 4. Create smux client session over KCP.
 	smuxSess, err := smux.Client(kcpSess, tcputil.DefaultSmuxConfig())
 	if err != nil {
 		cleanup()

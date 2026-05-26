@@ -59,3 +59,50 @@ func TestCaptchaSolveModeForAttempt(t *testing.T) {
 		}
 	})
 }
+
+func TestParseVkCaptchaError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("redirect captcha without image", func(t *testing.T) {
+		t.Parallel()
+
+		captchaErr := ParseVkCaptchaError(map[string]interface{}{
+			"error_code":   float64(14),
+			"error_msg":    "Captcha needed",
+			"captcha_sid":  "sid-1",
+			"redirect_uri": "https://id.vk.ru/captcha?session_token=session-1",
+		})
+		if captchaErr == nil {
+			t.Fatal("expected captcha error to parse")
+		}
+		if !captchaErr.IsCaptchaError() {
+			t.Fatal("expected redirect/session-token captcha to be solvable")
+		}
+		if captchaErr.SessionToken != "session-1" {
+			t.Fatalf("expected session token session-1, got %q", captchaErr.SessionToken)
+		}
+		if captchaErr.CaptchaImg != "" {
+			t.Fatalf("expected empty captcha image, got %q", captchaErr.CaptchaImg)
+		}
+	})
+
+	t.Run("legacy image captcha is not auto solvable without redirect", func(t *testing.T) {
+		t.Parallel()
+
+		captchaErr := ParseVkCaptchaError(map[string]interface{}{
+			"error_code":  float64(14),
+			"error_msg":   "Captcha needed",
+			"captcha_sid": "12345",
+			"captcha_img": "https://example.test/captcha.png",
+		})
+		if captchaErr == nil {
+			t.Fatal("expected legacy captcha error to parse")
+		}
+		if !captchaErr.IsCaptchaError() {
+			t.Fatal("expected legacy image-only captcha to be handled by manual image fallback")
+		}
+		if captchaErr.RedirectURI != "" || captchaErr.SessionToken != "" {
+			t.Fatalf("expected no redirect/session fields, got redirect=%q session=%q", captchaErr.RedirectURI, captchaErr.SessionToken)
+		}
+	})
+}
