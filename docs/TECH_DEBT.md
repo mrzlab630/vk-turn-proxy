@@ -42,11 +42,13 @@ actionable: move items out when they are fixed or deliberately accepted.
 
 ## Remaining Debt
 
-- `client/main.go` is still too large. Candidate split:
-  - `vk_auth.go` for VK token/TURN credential flow.
-  - `yandex_auth.go` for Telemost credential flow.
+- `client/main.go` is still too large, but the first provider/runtime splits
+  are done: `yandex_auth.go` owns Telemost, `vk_auth.go` owns VK credential
+  config/parser helpers, and `vless.go` owns KCP/smux TCP forwarding. Remaining
+  candidate split:
+  - `vk_token_chain.go` for VK token request/captcha orchestration.
   - `turn_relay.go` for TURN allocation and UDP relay logic.
-  - `vless.go` for KCP/smux TCP forwarding.
+  - `dtls_udp.go` for the non-VLESS DTLS packet loop.
   - `captcha.go` for shared captcha parsing and solve-mode control.
 - `tcputil.NewKCPOverDTLS` should be tested with an in-memory packet transport
   or a loopback DTLS fixture before tuning KCP settings further.
