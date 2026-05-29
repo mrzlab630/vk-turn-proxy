@@ -45,10 +45,9 @@ actionable: move items out when they are fixed or deliberately accepted.
 - `client/main.go` is still too large, but the first provider/runtime splits
   are done: `yandex_auth.go` owns Telemost, `vk_auth.go` owns VK credential
   config/parser helpers, `vless.go` owns KCP/smux TCP forwarding, and
-  `turn_relay.go` owns TURN allocation and UDP relay transport. Remaining
-  candidate split:
+  `turn_relay.go` owns TURN allocation and UDP relay transport, and
+  `dtls_udp.go` owns the non-VLESS DTLS packet loop. Remaining candidate split:
   - `vk_token_chain.go` for VK token request/captcha orchestration.
-  - `dtls_udp.go` for the non-VLESS DTLS packet loop.
   - `captcha.go` for shared captcha parsing and solve-mode control.
 - `tcputil.NewKCPOverDTLS` should be tested with an in-memory packet transport
   or a loopback DTLS fixture before tuning KCP settings further.
