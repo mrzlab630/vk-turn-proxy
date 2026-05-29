@@ -122,18 +122,19 @@ type Event struct {
 }
 
 type BuilderInput struct {
-	ServiceName string
-	Mode        string
-	Now         time.Time
-	StartedAt   time.Time
-	ListenAddr  string
-	BackendAddr string
-	BackendNet  string
-	VLESSMode   bool
-	Provider    ProviderName
-	LastError   *StatusError
-	Metrics     Metrics
-	Warnings    []string
+	ServiceName   string
+	Mode          string
+	Now           time.Time
+	StartedAt     time.Time
+	ListenAddr    string
+	BackendAddr   string
+	BackendNet    string
+	VLESSMode     bool
+	Provider      ProviderName
+	ProviderState ComponentState
+	LastError     *StatusError
+	Metrics       Metrics
+	Warnings      []string
 }
 
 func NewSnapshot(input BuilderInput) Snapshot {
@@ -163,6 +164,13 @@ func NewSnapshot(input BuilderInput) Snapshot {
 	if input.Provider == "" {
 		input.Provider = ProviderNone
 	}
+	if input.ProviderState == "" {
+		if input.Provider == ProviderNone {
+			input.ProviderState = StateDisabled
+		} else {
+			input.ProviderState = StateUnknown
+		}
+	}
 	input.Metrics.StartedAtUnix = input.StartedAt.Unix()
 
 	overall := StateReady
@@ -181,7 +189,7 @@ func NewSnapshot(input BuilderInput) Snapshot {
 		Overall:       overall,
 		Provider: ProviderStatus{
 			Name:  input.Provider,
-			State: StateDisabled,
+			State: input.ProviderState,
 		},
 		TURN: ComponentStatus{State: StateDisabled},
 		DTLS: ComponentStatus{State: StateReady},

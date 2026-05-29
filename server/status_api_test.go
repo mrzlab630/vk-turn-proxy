@@ -74,6 +74,45 @@ func TestStatusAPIExposesHealthStatusEventsAndLogs(t *testing.T) {
 	}
 }
 
+func TestStatusAPIExposesProviderStateTransitions(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := NewRuntimeStatus(ServerConfig{ServiceName: "vkturn-provider-test"})
+	runtime.RecordProviderState(
+		statusmodel.ProviderVK,
+		statusmodel.StateCaptchaRequired,
+		statusmodel.CodeProviderCaptcha,
+		"captcha_sid=secret captcha required",
+	)
+
+	addr, err := startStatusAPI(ctx, "127.0.0.1:0", runtime)
+	if err != nil {
+		t.Fatalf("startStatusAPI: %v", err)
+	}
+	baseURL := "http://" + addr.String()
+
+	var snapshot statusmodel.Snapshot
+	getJSON(t, baseURL+"/status", &snapshot)
+	if snapshot.Provider.Name != statusmodel.ProviderVK || snapshot.Provider.State != statusmodel.StateCaptchaRequired {
+		t.Fatalf("provider = %#v", snapshot.Provider)
+	}
+
+	var events struct {
+		Events []statusmodel.Event `json:"events"`
+	}
+	getJSON(t, baseURL+"/events", &events)
+	if len(events.Events) == 0 {
+		t.Fatalf("events empty")
+	}
+	last := events.Events[len(events.Events)-1]
+	if last.Component != "provider" || last.State != statusmodel.StateCaptchaRequired || last.Code != statusmodel.CodeProviderCaptcha {
+		t.Fatalf("last provider event = %#v", last)
+	}
+	if strings.Contains(last.Message, "secret") {
+		t.Fatalf("provider event leaked secret: %q", last.Message)
+	}
+}
+
 func TestStatusAPIRejectsNonLoopbackBind(t *testing.T) {
 	_, err := startStatusAPI(context.Background(), "0.0.0.0:0", NewRuntimeStatus(ServerConfig{}))
 	if err == nil {

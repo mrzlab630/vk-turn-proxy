@@ -45,6 +45,8 @@ actionable: move items out when they are fixed or deliberately accepted.
   `VKTURN_VK_CREDENTIALS` override instead of a committed application list.
 - Route helper scripts have a repo-local static smoke proof that avoids host
   route changes.
+- Provider state transitions can be recorded into the existing status API and
+  event stream without a separate provider-control endpoint.
 
 ## Remaining Debt
 
@@ -59,9 +61,9 @@ actionable: move items out when they are fixed or deliberately accepted.
 - Route helper scripts still need live platform validation on Linux/macOS/Windows
   before relying on them for production operator workflows.
 - Runtime integration tests now cover fake UDP/TCP backends, local status API,
-  and a Docker Xray/VLESS lab. Next integration debt is to expose provider
-  state transitions through a server/control API when the client control channel
-  is designed.
+  provider-state status/event exposure, and a Docker Xray/VLESS lab. Next
+  integration debt is wiring live client provider transitions into the status
+  surface after the client control channel is designed.
 
 ## Quality Gates
 

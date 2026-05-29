@@ -51,6 +51,12 @@ not through an accidentally exposed diagnostics port.
 
 ## Provider Error Mapping
 
+Provider state transitions are exposed through the `provider` object in
+`GET /status` and as `component=provider` events in `GET /events`. The current
+server implementation can record these transitions without adding a separate
+provider-control endpoint; client-side provider wiring can attach to this
+surface when the control channel is designed.
+
 Provider adapters and client-side provider code should normalize external
 failures before exposing them to control clients:
 

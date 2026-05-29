@@ -61,6 +61,19 @@ func TestNewSnapshotMapsErrorCodesToComponentStates(t *testing.T) {
 	}
 }
 
+func TestNewSnapshotUsesExplicitProviderState(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	snapshot := NewSnapshot(BuilderInput{
+		Now:           now,
+		Provider:      ProviderVK,
+		ProviderState: StateCaptchaRequired,
+	})
+
+	if snapshot.Provider.Name != ProviderVK || snapshot.Provider.State != StateCaptchaRequired {
+		t.Fatalf("provider = %#v", snapshot.Provider)
+	}
+}
+
 func TestNewSnapshotMarksFatalListenFailure(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	snapshot := NewSnapshot(BuilderInput{

@@ -19,6 +19,7 @@ type RuntimeStatus struct {
 	startedAt time.Time
 	events    []statusmodel.Event
 	logs      []string
+	provider  statusmodel.ProviderStatus
 	lastError atomic.Pointer[statusmodel.StatusError]
 	nextEvent atomic.Uint64
 
@@ -32,7 +33,11 @@ type RuntimeStatus struct {
 
 func NewRuntimeStatus(cfg ServerConfig) *RuntimeStatus {
 	now := time.Now().UTC()
-	runtime := &RuntimeStatus{cfg: cfg, startedAt: now}
+	runtime := &RuntimeStatus{
+		cfg:       cfg,
+		startedAt: now,
+		provider:  statusmodel.ProviderStatus{Name: statusmodel.ProviderNone, State: statusmodel.StateDisabled},
+	}
 	runtime.RecordEvent("server", statusmodel.StateInitializing, statusmodel.CodeNone, "server status initialized")
 	return runtime
 }
@@ -43,15 +48,18 @@ func (r *RuntimeStatus) Snapshot() statusmodel.Snapshot {
 		copy := *ptr
 		lastError = &copy
 	}
+	provider := r.ProviderStatus()
 	return statusmodel.NewSnapshot(statusmodel.BuilderInput{
-		ServiceName: r.cfg.ServiceName,
-		Now:         time.Now().UTC(),
-		StartedAt:   r.startedAt,
-		ListenAddr:  r.cfg.ListenAddr,
-		BackendAddr: r.cfg.ConnectAddr,
-		BackendNet:  r.cfg.BackendNetwork,
-		VLESSMode:   r.cfg.VLESSMode,
-		LastError:   lastError,
+		ServiceName:   r.cfg.ServiceName,
+		Now:           time.Now().UTC(),
+		StartedAt:     r.startedAt,
+		ListenAddr:    r.cfg.ListenAddr,
+		BackendAddr:   r.cfg.ConnectAddr,
+		BackendNet:    r.cfg.BackendNetwork,
+		VLESSMode:     r.cfg.VLESSMode,
+		Provider:      provider.Name,
+		ProviderState: provider.State,
+		LastError:     lastError,
 		Metrics: statusmodel.Metrics{
 			AcceptedConnections: r.acceptedConnections.Load(),
 			ActiveConnections:   r.activeConnections.Load(),
@@ -59,6 +67,25 @@ func (r *RuntimeStatus) Snapshot() statusmodel.Snapshot {
 			HandshakeFailures:   r.handshakeFailures.Load(),
 		},
 	})
+}
+
+func (r *RuntimeStatus) RecordProviderState(provider statusmodel.ProviderName, state statusmodel.ComponentState, code statusmodel.ErrorCode, message string) {
+	if provider == "" {
+		provider = statusmodel.ProviderNone
+	}
+	if state == "" {
+		state = statusmodel.StateUnknown
+	}
+	r.mu.Lock()
+	r.provider = statusmodel.ProviderStatus{Name: provider, State: state}
+	r.mu.Unlock()
+	r.RecordEvent("provider", state, code, message)
+}
+
+func (r *RuntimeStatus) ProviderStatus() statusmodel.ProviderStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.provider
 }
 
 func (r *RuntimeStatus) RecordAcceptedConnection() {
