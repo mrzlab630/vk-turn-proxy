@@ -42,14 +42,12 @@ actionable: move items out when they are fixed or deliberately accepted.
 
 ## Remaining Debt
 
-- `client/main.go` is still too large, but the first provider/runtime splits
-  are done: `yandex_auth.go` owns Telemost, `vk_auth.go` owns VK credential
-  config/parser helpers, `vless.go` owns KCP/smux TCP forwarding, and
-  `turn_relay.go` owns TURN allocation and UDP relay transport,
-  `dtls_udp.go` owns the non-VLESS DTLS packet loop, and
-  `vk_token_chain.go` owns VK token request/captcha orchestration. Remaining
-  candidate split:
-  - `captcha.go` for shared captcha parsing and solve-mode control.
+- `client/main.go` has been reduced by provider/runtime splits: `yandex_auth.go`
+  owns Telemost, `vk_auth.go` owns VK credential config/parser helpers,
+  `vless.go` owns KCP/smux TCP forwarding, `turn_relay.go` owns TURN allocation
+  and UDP relay transport, `dtls_udp.go` owns the non-VLESS DTLS packet loop,
+  `vk_token_chain.go` owns VK token request/captcha orchestration, and
+  `captcha.go` owns shared captcha parsing and solve-mode control.
 - `tcputil.NewKCPOverDTLS` should be tested with an in-memory packet transport
   or a loopback DTLS fixture before tuning KCP settings further.
 - The current VK/Yandex flows depend on private browser APIs. Parser coverage
