@@ -403,8 +403,8 @@ Backend phase is done when all of these pass:
   - Acceptance: tech debt stays small, current, and actionable.
   - Proof: `docs/TECH_DEBT.md` reflects the current package baseline,
     fixed status/provider readiness work, and keeps remaining debt focused on
-    client file splitting, provider drift, hardcoded VK app credentials, and
-    future provider-state control API exposure.
+    provider drift, route-helper live platform validation, and future
+    provider-state control API exposure.
 
 ## Deferred Until Phase 2
 

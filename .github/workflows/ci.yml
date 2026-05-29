@@ -52,6 +52,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check route helpers
+        run: dev/scripts/prove-route-helpers.sh
+
       - name: Run tests
         run: |
           go test ./... -v

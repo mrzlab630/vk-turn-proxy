@@ -43,6 +43,8 @@ actionable: move items out when they are fixed or deliberately accepted.
   client/server round trip.
 - VK app credentials are supplied through the documented
   `VKTURN_VK_CREDENTIALS` override instead of a committed application list.
+- Route helper scripts have a repo-local static smoke proof that avoids host
+  route changes.
 
 ## Remaining Debt
 
@@ -54,7 +56,8 @@ actionable: move items out when they are fixed or deliberately accepted.
   `captcha.go` owns shared captcha parsing and solve-mode control.
 - The current VK/Yandex flows depend on private browser APIs. Parser coverage
   should be expanded before changing request payloads.
-- Route helper scripts are platform-specific and not covered by tests.
+- Route helper scripts still need live platform validation on Linux/macOS/Windows
+  before relying on them for production operator workflows.
 - Runtime integration tests now cover fake UDP/TCP backends, local status API,
   and a Docker Xray/VLESS lab. Next integration debt is to expose provider
   state transitions through a server/control API when the client control channel
