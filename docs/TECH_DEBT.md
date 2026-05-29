@@ -39,6 +39,8 @@ actionable: move items out when they are fixed or deliberately accepted.
 - VK provider readiness has fixture-backed captcha/TURN response parser tests,
   an opt-in-only live VK proof, and shared provider error classification in
   `internal/providerstate`.
+- `tcputil.NewKCPOverDTLS` has a loopback DTLS fixture test proving a KCP
+  client/server round trip.
 
 ## Remaining Debt
 
@@ -48,8 +50,6 @@ actionable: move items out when they are fixed or deliberately accepted.
   and UDP relay transport, `dtls_udp.go` owns the non-VLESS DTLS packet loop,
   `vk_token_chain.go` owns VK token request/captcha orchestration, and
   `captcha.go` owns shared captcha parsing and solve-mode control.
-- `tcputil.NewKCPOverDTLS` should be tested with an in-memory packet transport
-  or a loopback DTLS fixture before tuning KCP settings further.
 - The current VK/Yandex flows depend on private browser APIs. Parser coverage
   should be expanded before changing request payloads.
 - The hardcoded VK application credential list is operationally fragile. If it
