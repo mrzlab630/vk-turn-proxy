@@ -1,0 +1,89 @@
+name: vkturn-prod-sim
+
+x-dns: &dev_dns
+  dns:
+    - 1.1.1.1
+    - 8.8.8.8
+
+services:
+  prod-server:
+    image: alpine:3.23
+    <<: *dev_dns
+    command: ["/bin/sh", "/opt/vk-turn-proxy/prod-sim-entrypoint.sh"]
+    volumes:
+      - ./bin/xray:/usr/local/bin/xray:ro
+      - ../bin/vk-turn-proxy-server:/opt/vk-turn-proxy/vk-turn-proxy-server:ro
+      - ./scripts/entrypoint.sh:/opt/vk-turn-proxy/prod-sim-entrypoint.sh:ro
+      - ./etc/xray/config.json:/etc/xray/config.json:ro
+      - ./etc/vkturn/server.json:/etc/vkturn/server.json:ro
+      - ./var/log/vk-turn-proxy:/var/log/vk-turn-proxy
+    networks:
+      prod-sim:
+        ipv4_address: 172.32.0.10
+
+  vkturn-client:
+    image: alpine:3.23
+    <<: *dev_dns
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec vk-turn-proxy-client
+        -dev-direct
+        -peer prod-server:56000
+        -listen 0.0.0.0:9000
+        -n 1
+        -vless
+    depends_on:
+      prod-server:
+        condition: service_started
+    volumes:
+      - ../bin/vk-turn-proxy-client:/usr/local/bin/vk-turn-proxy-client:ro
+    networks:
+      prod-sim:
+        ipv4_address: 172.32.0.20
+
+  xray-client:
+    image: ghcr.io/xtls/xray-core:latest
+    <<: *dev_dns
+    command: ["run", "-config", "/etc/xray/config.json"]
+    depends_on:
+      vkturn-client:
+        condition: service_started
+    volumes:
+      - ../xray/client.json:/etc/xray/config.json:ro
+    networks:
+      prod-sim:
+        ipv4_address: 172.32.0.30
+
+  test-client:
+    image: busybox:latest
+    <<: *dev_dns
+    depends_on:
+      xray-client:
+        condition: service_started
+    command:
+      - sh
+      - -lc
+      - >-
+        for i in $$(seq 1 80); do
+          body="$$(http_proxy=http://xray-client:1080 wget -q -T 2 -Y on -O - http://example.com/ || true)";
+          if echo "$$body" | grep -qi "example"; then
+            echo "PROD_SIM_OK";
+            exit 0;
+          fi;
+          echo "waiting for prod-sim route ($$i/80): $$body";
+          sleep 1;
+        done;
+        echo "PROD_SIM_FAILED" >&2;
+        exit 1
+    networks:
+      prod-sim:
+        ipv4_address: 172.32.0.40
+
+networks:
+  prod-sim:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.32.0.0/24

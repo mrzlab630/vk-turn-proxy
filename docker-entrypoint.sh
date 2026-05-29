@@ -8,4 +8,4 @@ if [ "${VLESS_MODE}" = "true" ]; then
     VLESS_FLAG="-vless"
 fi
 
-exec ./vk-turn-proxy -listen 0.0.0.0:56000 -connect "$CONNECT" $VLESS_FLAG
+exec ./vk-turn-proxy-server -listen 0.0.0.0:56000 -connect "$CONNECT" $VLESS_FLAG

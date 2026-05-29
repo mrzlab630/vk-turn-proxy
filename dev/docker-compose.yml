@@ -1,0 +1,116 @@
+name: vkturn-dev-lab
+
+x-dns: &dev_dns
+  dns:
+    - 1.1.1.1
+    - 8.8.8.8
+
+services:
+  echo-target:
+    image: busybox:latest
+    <<: *dev_dns
+    command: ["httpd", "-f", "-v", "-p", "0.0.0.0:8080", "-h", "/www"]
+    volumes:
+      - ./echo:/www:ro
+    networks:
+      lab:
+        ipv4_address: 172.31.0.10
+
+  xray-server:
+    image: ghcr.io/xtls/xray-core:latest
+    <<: *dev_dns
+    command: ["run", "-config", "/etc/xray/config.json"]
+    depends_on:
+      echo-target:
+        condition: service_started
+    volumes:
+      - ./xray/server.json:/etc/xray/config.json:ro
+    networks:
+      lab:
+        ipv4_address: 172.31.0.20
+
+  vkturn-server:
+    image: alpine:3.23
+    <<: *dev_dns
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec vk-turn-proxy-server
+        -config /etc/vkturn/server.json
+    depends_on:
+      xray-server:
+        condition: service_started
+    volumes:
+      - ./bin/vk-turn-proxy-server:/usr/local/bin/vk-turn-proxy-server:ro
+      - ./vkturn/server.json:/etc/vkturn/server.json:ro
+    networks:
+      lab:
+        ipv4_address: 172.31.0.30
+
+  vkturn-client:
+    image: alpine:3.23
+    <<: *dev_dns
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec vk-turn-proxy-client
+        -dev-direct
+        -peer vkturn-server:56000
+        -listen 0.0.0.0:9000
+        -n 1
+        -vless
+    depends_on:
+      vkturn-server:
+        condition: service_started
+    volumes:
+      - ./bin/vk-turn-proxy-client:/usr/local/bin/vk-turn-proxy-client:ro
+    networks:
+      lab:
+        ipv4_address: 172.31.0.40
+
+  xray-client:
+    image: ghcr.io/xtls/xray-core:latest
+    <<: *dev_dns
+    command: ["run", "-config", "/etc/xray/config.json"]
+    depends_on:
+      vkturn-client:
+        condition: service_started
+    volumes:
+      - ./xray/client.json:/etc/xray/config.json:ro
+    networks:
+      lab:
+        ipv4_address: 172.31.0.50
+
+  test-client:
+    image: busybox:latest
+    <<: *dev_dns
+    depends_on:
+      xray-client:
+        condition: service_started
+    command:
+      - sh
+      - -lc
+      - >-
+        for i in $$(seq 1 60); do
+          body="$$(http_proxy=http://xray-client:1080 wget -q -T 2 -Y on -O - http://172.31.0.10:8080/ || true)";
+          if [ "$$body" = "vk-turn-proxy dev lab ok" ]; then
+            echo "DEV_LAB_OK";
+            exit 0;
+          fi;
+          echo "waiting for dev lab route ($$i/60): $$body";
+          sleep 1;
+        done;
+        echo "DEV_LAB_FAILED" >&2;
+        exit 1
+    networks:
+      lab:
+        ipv4_address: 172.31.0.60
+
+networks:
+  lab:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

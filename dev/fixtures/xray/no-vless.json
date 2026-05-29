@@ -1,0 +1,41 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "port": 1080,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": true
+      }
+    },
+    {
+      "tag": "vless-ws-in",
+      "listen": "0.0.0.0",
+      "port": 10002,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "22222222-2222-4222-8222-222222222222"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    }
+  ]
+}

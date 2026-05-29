@@ -1,0 +1,9 @@
+{
+  "listen_addr": "0.0.0.0:56000",
+  "connect_addr": "127.0.0.1:10001",
+  "vless_mode": true,
+  "check_backend": true,
+  "backend_network": "tcp",
+  "log_level": "debug",
+  "service_name": "vkturn-prod-sim"
+}

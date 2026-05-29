@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
 	"strings"
 )
 
@@ -163,22 +162,20 @@ func convertToFemaleSurname(surname string) string {
 }
 
 func generateName() string {
-	// Decide gender first
-	isFemale := rand.Intn(2) == 0
+	isFemale := secureIntn(2) == 0
 
 	var fn string
 	if isFemale {
-		fn = femaleFirstNames[rand.Intn(len(femaleFirstNames))]
+		fn = femaleFirstNames[secureIntn(len(femaleFirstNames))]
 	} else {
-		fn = maleFirstNames[rand.Intn(len(maleFirstNames))]
+		fn = maleFirstNames[secureIntn(len(maleFirstNames))]
 	}
 
-	// 70% chance to have a last name
-	if rand.Float32() < 0.3 {
+	if secureChance(3, 10) {
 		return fn
 	}
 
-	ln := lastNames[rand.Intn(len(lastNames))]
+	ln := lastNames[secureIntn(len(lastNames))]
 	if isFemale {
 		ln = convertToFemaleSurname(ln)
 	}

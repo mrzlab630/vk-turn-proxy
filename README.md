@@ -4,11 +4,184 @@
 
 Только для учебных целей!
 
+## Xray/VLESS sidecar quick start
+
+Текущая backend-цель проекта — не заменить Xray, а поднять VK TURN sidecar рядом
+с уже работающим Xray/VLESS сервером. Прямой Xray/VLESS маршрут остается как
+есть, а sidecar добавляет альтернативный путь через VK TURN на соседнем UDP
+порту.
+
+Безопасный порядок работы:
+
+```bash
+# 1. Проверить текущую машину или fixture-root без изменений.
+go run ./cmd/vkturn doctor \
+  --root dev/fixtures/linux-root \
+  --skip-host-commands \
+  --no-port-probe
+
+# 2. Построить read-only план sidecar для существующего Xray config.
+go run ./cmd/vkturn server plan \
+  --xray-config dev/fixtures/xray/vless-tcp.json
+
+# 3. Проверить install artifacts только во временном root.
+dry_root=$(mktemp -d)
+go run ./cmd/vkturn server install \
+  --dry-run \
+  --write \
+  --root "$dry_root" \
+  --xray-config dev/fixtures/xray/vless-tcp.json \
+  --no-port-probe
+
+# 4. Доказать полный маршрут в Docker без live VK и без host changes.
+dev/scripts/prove-vless-roundtrip.sh
+```
+
+Production apply-команды пока намеренно не запускаются на dev-машине. Все
+installer/lifecycle проверки идут через dry-run roots, fixtures или Docker.
+
 ## Документация проекта
 
 - [docs/API_FLOWS.md](docs/API_FLOWS.md) — локальная база по текущим VK/Yandex API flows, endpoint-полям и рискам устаревания.
 - [docs/STRATEGY.md](docs/STRATEGY.md) — стратегия развития: VK TURN sidecar для существующего Xray/VLESS, Docker-first тестовая среда и roadmap.
+- [docs/BACKEND_TODO.md](docs/BACKEND_TODO.md) — рабочий TODO backend-фазы: Docker proof, Xray discovery/plan, sidecar install, control/status API.
 - [docs/TECH_DEBT.md](docs/TECH_DEBT.md) — стартовая карта техдолга и обязательные quality gates перед изменениями.
+- [docs/status/STATUS_CONTRACT.md](docs/status/STATUS_CONTRACT.md) — локальный `status.v1` контракт для health/status/events/logs API.
+- [dev/README.md](dev/README.md) — Docker Xray/VLESS lab для проверки backend-маршрута без изменений dev-хоста.
+- [dev/prod-sim/README.md](dev/prod-sim/README.md) — production-like Linux server simulation для будущих `doctor`/`plan` проверок.
+
+## Read-only диагностика и план для Xray/VLESS sidecar
+
+Команда `vkturn doctor` собирает read-only отчет: OS/privileges, доступные
+команды, кандидаты Xray systemd unit, process/config candidates, найденные
+VLESS TCP inbounds, доступность sidecar UDP-порта и Docker/dev статус. На dev
+машине ее можно запускать против fixture-root, не читая host services:
+
+```bash
+go run ./cmd/vkturn doctor \
+  --root dev/fixtures/linux-root \
+  --skip-host-commands \
+  --no-port-probe
+```
+
+Для машинного потребления:
+
+```bash
+go run ./cmd/vkturn doctor --root dev/fixtures/linux-root --skip-host-commands --no-port-probe --json
+```
+
+Команда `vkturn server plan` читает существующий JSON-конфиг Xray, находит
+первый VLESS TCP inbound, выбирает свободный UDP-порт для sidecar и печатает,
+что будет создано будущим install-шагом. Команда не пишет файлы, не меняет Xray
+и не перезапускает сервисы.
+
+```bash
+go run ./cmd/vkturn server plan --xray-config dev/fixtures/xray/vless-tcp.json
+```
+
+Для машинного потребления:
+
+```bash
+go run ./cmd/vkturn server plan --xray-config dev/fixtures/xray/vless-tcp.json --json
+```
+
+Команда `vkturn server install` сейчас разрешена только как dry-run. Она
+генерирует sidecar unit/config/env/manifest во временный root и явно показывает,
+что Xray config/service не будут изменены:
+
+```bash
+dry_root=$(mktemp -d)
+go run ./cmd/vkturn server install \
+  --dry-run \
+  --write \
+  --root "$dry_root" \
+  --xray-config dev/fixtures/xray/vless-tcp.json \
+  --no-port-probe
+```
+
+Проверка этого контракта:
+
+```bash
+dev/scripts/prove-install-dry-run.sh
+```
+
+Lifecycle-команды sidecar пока тоже работают только в dry-run root. Они не
+вызывают host `systemctl`; состояние и журнал пишутся под `/run/vkturn` внутри
+указанного root:
+
+```bash
+go run ./cmd/vkturn server status --dry-run --root "$dry_root"
+go run ./cmd/vkturn server start --dry-run --root "$dry_root"
+go run ./cmd/vkturn server logs --dry-run --root "$dry_root" --lines 50
+go run ./cmd/vkturn server stop --dry-run --root "$dry_root"
+```
+
+Проверка lifecycle-контракта:
+
+```bash
+dev/scripts/prove-lifecycle-dry-run.sh
+```
+
+Rollback/uninstall тоже manifest-driven и доступен только как dry-run. Команда
+показывает точные sidecar-owned paths и не удаляет Xray config/service:
+
+```bash
+go run ./cmd/vkturn server uninstall --dry-run --root "$dry_root"
+go run ./cmd/vkturn server uninstall --dry-run --write --root "$dry_root"
+```
+
+Проверка rollback-контракта:
+
+```bash
+dev/scripts/prove-uninstall-dry-run.sh
+```
+
+## Local status API
+
+Сервер может поднять локальный HTTP status API для будущего Android-клиента и
+операторской диагностики. API по умолчанию должен слушать только loopback:
+`127.0.0.1` или `::1`. Попытка привязать его к `0.0.0.0` или LAN/public адресу
+отклоняется.
+
+```bash
+go run ./server \
+  -listen 127.0.0.1:56000 \
+  -connect 127.0.0.1:10001 \
+  -vless \
+  -status-api 127.0.0.1:18081
+```
+
+Доступные endpoints:
+
+```text
+GET  /health
+GET  /status
+GET  /events
+GET  /logs
+POST /restart-sidecar
+```
+
+`/restart-sidecar` в текущей dev-реализации только записывает принятое событие;
+host `systemd` и Xray не трогаются. Полный контракт схемы и коды состояний:
+[docs/status/STATUS_CONTRACT.md](docs/status/STATUS_CONTRACT.md).
+
+Проверка status-контракта:
+
+```bash
+dev/scripts/prove-status-api.sh
+```
+
+Live VK credential proof intentionally does nothing unless explicitly enabled:
+
+```bash
+dev/scripts/prove-live-vk-opt-in.sh
+
+VKTURN_LIVE_VK_PROOF=1 \
+VKTURN_LIVE_VK_LINK='https://vk.com/call/join/...' \
+dev/scripts/prove-live-vk-opt-in.sh
+```
+
+Default tests and Docker proofs never call VK/Yandex/MAX.
 
 ## Похожие проекты
 
@@ -449,6 +622,28 @@ curl -L -o client https://github.com/cacggghp/vk-turn-proxy/releases/latest/down
 ```
 docker run -p 56000:56000/udp -e CONNECT_ADDR=127.0.0.1:443 -e VLESS_MODE=true vk-turn-proxy
 ```
+
+Серверный sidecar также поддерживает JSON-конфиг:
+
+```json
+{
+  "listen_addr": "0.0.0.0:56000",
+  "connect_addr": "127.0.0.1:443",
+  "vless_mode": true,
+  "check_backend": true,
+  "backend_network": "tcp",
+  "log_level": "info",
+  "service_name": "vkturn-server"
+}
+```
+
+```bash
+vk-turn-proxy-server -config ./server.json
+```
+
+CLI-флаги `-listen`, `-connect`, `-vless`, `-check-backend`, `-log-level`,
+`-status-api` и `-service-name` переопределяют значения из конфига только если
+они явно переданы.
 
 ### Клиент
 ```

@@ -1,0 +1,7 @@
+{
+  "turn_server": {
+    "username": "turn-user",
+    "credential": "turn-pass",
+    "urls": []
+  }
+}

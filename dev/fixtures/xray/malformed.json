@@ -1,0 +1,7 @@
+{
+  "inbounds": [
+    {
+      "protocol": "vless",
+      "port": 10001,
+  ]
+}

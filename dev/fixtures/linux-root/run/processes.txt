@@ -1,0 +1,3 @@
+1 /sbin/init
+42 /usr/local/bin/xray run -config /etc/xray/config.json
+77 /opt/vk-turn-proxy/vk-turn-proxy-server -config /etc/vkturn/server.json

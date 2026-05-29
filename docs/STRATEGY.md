@@ -47,6 +47,16 @@ Routing choices should stay in Xray/v2rayN/nekoray/sing-box where possible.
 
 ## Execution Order
 
+Operational backend tasks are tracked in `docs/BACKEND_TODO.md`. Treat that
+file as the active checklist for phase 1 and keep this strategy document focused
+on direction and constraints.
+
+Current development machine rule: use Docker and repo-local files only. Do not
+change host system services, Docker daemon settings, host Xray configs, firewall
+rules, or `/etc` files from this project during development. Production install
+commands may be designed in code, but on the dev machine they must be exercised
+through dry runs, generated artifacts, fixtures, or disposable containers.
+
 Development is intentionally split into two stages:
 
 1. **Backend/server-side foundation first.** Build the sidecar backend,
@@ -181,6 +191,23 @@ docker compose
   optional fake-provider
     supplies deterministic TURN credentials for offline tests
 ```
+
+Add a second production-like Docker profile for installer/discovery work:
+
+```text
+prod-server container
+  /etc/xray/config.json
+  /etc/vkturn/server.json
+  /opt/vk-turn-proxy/vk-turn-proxy-server
+  /var/log/xray
+  /var/log/vk-turn-proxy
+  real xray process and vkturn sidecar process
+```
+
+This profile is for `doctor`, `server plan`, filesystem layout, process, and log
+contract work. It must not use host `systemd`, host `/etc`, host firewall, or
+privileged Docker by default. A systemd-in-Docker profile can be added later as
+an explicit opt-in test for install/lifecycle commands.
 
 Testing layers:
 

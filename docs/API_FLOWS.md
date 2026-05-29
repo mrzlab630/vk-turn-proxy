@@ -9,6 +9,11 @@ without public changelogs.
 
 Source: `client/main.go`, `getTokenChain`.
 
+Fixture coverage lives under `client/testdata/vk/` and is exercised by
+`go test ./client`. Default tests never call VK. Live VK validation is opt-in
+only through `dev/scripts/prove-live-vk-opt-in.sh` with explicit environment
+variables.
+
 ### Inputs
 
 - Invite link: `https://vk.com/call/join/<join_id>`.
@@ -122,6 +127,16 @@ Source: `client/main.go`, `getTokenChain`.
    - `turn_server.urls[0]`, with `turn:` or `turns:` prefix stripped and query
      string removed
 
+   Current fixture names:
+
+   - `turn_success.json`
+   - `turn_success_tls.json`
+   - `turn_missing_server.json`
+   - `turn_missing_username.json`
+   - `turn_missing_credential.json`
+   - `turn_empty_urls.json`
+   - `turn_non_string_url.json`
+
 ### VK Captcha NotRobot Flow
 
 Source: `client/main.go`, `client/slider_captcha.go`, `client/manual_captcha.go`.
@@ -155,6 +170,29 @@ Manual fallback:
 - Redirect captcha is proxied locally through `http://localhost:8765` so the
   browser can solve it and return `success_token`.
 - Image-only captcha opens a small local form and returns `captcha_key`.
+
+Current fixture names:
+
+- `captcha_redirect.json`
+- `captcha_image.json`
+
+### Provider State Mapping
+
+Source: `internal/providerstate`.
+
+Provider errors are normalized for the backend/client control contract before a
+future Android client consumes them:
+
+- captcha strings, `error_code=14`, `error_code:14`, and `captcha_sid` ->
+  `provider_captcha_required` / `captcha_required`;
+- `error_code=29`, `error_code:29`, `Rate limit`, `Too many requests`, and
+  HTTP 429-shaped errors -> `provider_rate_limited` / `rate_limited`;
+- `401`, `403`, `Unauthorized`, `authentication`, `invalid credential`, and
+  `stale nonce` -> `provider_auth_required` / `auth_required`;
+- timeouts, DNS failures, connection failures, and HTTP 5xx-shaped errors ->
+  `provider_down` / `provider_down`;
+- parser drift such as missing expected fields remains `unknown` so it is not
+  hidden as a retry-only transport issue.
 
 ## Yandex Telemost TURN Credentials
 

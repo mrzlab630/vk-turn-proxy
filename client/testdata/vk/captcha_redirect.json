@@ -1,0 +1,6 @@
+{
+  "error_code": 14,
+  "error_msg": "Captcha needed",
+  "captcha_sid": "sid-1",
+  "redirect_uri": "https://id.vk.ru/captcha?session_token=session-1"
+}

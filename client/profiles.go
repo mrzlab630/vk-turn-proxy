@@ -1,9 +1,5 @@
 package main
 
-import (
-	"math/rand"
-)
-
 type Profile struct {
 	UserAgent       string
 	SecChUa         string
@@ -78,5 +74,5 @@ var profile = []Profile{
 
 // getRandomProfile returns a paired User-Agent and Client Hints profile.
 func getRandomProfile() Profile {
-	return profile[rand.Intn(len(profile))]
+	return profile[secureIntn(len(profile))]
 }

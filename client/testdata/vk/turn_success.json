@@ -1,0 +1,7 @@
+{
+  "turn_server": {
+    "username": "turn-user",
+    "credential": "turn-pass",
+    "urls": ["turn:127.0.0.1:3478?transport=udp"]
+  }
+}

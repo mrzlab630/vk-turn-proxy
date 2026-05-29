@@ -1,0 +1,37 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "http-in",
+      "listen": "0.0.0.0",
+      "port": 1080,
+      "protocol": "http"
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "via-vkturn",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "vkturn-client",
+            "port": 9000,
+            "users": [
+              {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    }
+  ]
+}

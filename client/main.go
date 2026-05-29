@@ -6,7 +6,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -16,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	neturl "net/url"
@@ -34,6 +32,8 @@ import (
 	"github.com/bogdanfinn/tls-client/profiles"
 
 	"github.com/bschaatsbergen/dnsdialer"
+	"github.com/cacggghp/vk-turn-proxy/internal/providerstate"
+	"github.com/cacggghp/vk-turn-proxy/internal/statusmodel"
 	"github.com/cacggghp/vk-turn-proxy/tcputil"
 	"github.com/cbeuw/connutil"
 	"github.com/google/uuid"
@@ -230,19 +230,19 @@ func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 
 func generateBrowserFp(profile Profile) string {
 	data := profile.UserAgent + profile.SecChUa + "1920x1080x24" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	h := md5.Sum([]byte(data))
+	h := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(h[:])
 }
 
 func generateFakeCursor() string {
-	startX := 600 + rand.Intn(400)
-	startY := 300 + rand.Intn(200)
-	startTime := time.Now().UnixMilli() - int64(rand.Intn(2000)+1000)
+	startX := 600 + secureIntn(400)
+	startY := 300 + secureIntn(200)
+	startTime := time.Now().UnixMilli() - int64(secureIntn(2000)+1000)
 	var points []string
-	for i := 0; i < 15+rand.Intn(10); i++ {
-		startX += rand.Intn(15) - 5
-		startY += rand.Intn(15) + 2
-		startTime += int64(rand.Intn(40) + 10)
+	for i := 0; i < 15+secureIntn(10); i++ {
+		startX += secureIntn(15) - 5
+		startY += secureIntn(15) + 2
+		startTime += int64(secureIntn(40) + 10)
 		points = append(points, fmt.Sprintf(`{"x":%d,"y":%d,"t":%d}`, startX, startY, startTime))
 	}
 	return "[" + strings.Join(points, ",") + "]"
@@ -533,8 +533,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 	cursorJSON := generateFakeCursor()
 	answer := base64.StdEncoding.EncodeToString([]byte("{}"))
 
-	// Dynamically generate debug_info to avoid static fingerprint bans
-	debugInfoBytes := md5.Sum([]byte(profile.UserAgent + strconv.FormatInt(time.Now().UnixNano(), 10)))
+	debugInfoBytes := sha256.Sum256([]byte(profile.UserAgent + strconv.FormatInt(time.Now().UnixNano(), 10)))
 	debugInfo := hex.EncodeToString(debugInfoBytes[:])
 
 	connectionRtt := "[50,50,50,50,50,50,50,50,50,50]"
@@ -586,12 +585,35 @@ type VKCredentials struct {
 	ClientSecret string
 }
 
-var vkCredentialsList = []VKCredentials{
-	{ClientID: "6287487", ClientSecret: "QbYic1K3lEV5kTGiqlq2"},  // VK_WEB_APP_ID
-	{ClientID: "7879029", ClientSecret: "aR5NKGmm03GYrCiNKsaw"},  // VK_MVK_APP_ID
-	{ClientID: "52461373", ClientSecret: "o557NLIkAErNhakXrQ7A"}, // VK_WEB_VKVIDEO_APP_ID
-	{ClientID: "52649896", ClientSecret: "WStp4ihWG4l3nmXZgIbC"}, // VK_MVK_VKVIDEO_APP_ID
-	{ClientID: "51781872", ClientSecret: "IjjCNl4L4Tf5QZEXIHKK"}, // VK_ID_AUTH_APP
+var defaultVKCredentials = []VKCredentials{}
+
+func vkCredentialsFromEnv() []VKCredentials {
+	configured := strings.TrimSpace(os.Getenv("VKTURN_VK_CREDENTIALS"))
+	if configured == "" {
+		return append([]VKCredentials(nil), defaultVKCredentials...)
+	}
+
+	parts := strings.Split(configured, ",")
+	credentials := make([]VKCredentials, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		clientID, clientSecret, ok := strings.Cut(part, ":")
+		if !ok {
+			log.Printf("[VK Auth] skipping malformed VKTURN_VK_CREDENTIALS entry")
+			continue
+		}
+		clientID = strings.TrimSpace(clientID)
+		clientSecret = strings.TrimSpace(clientSecret)
+		if clientID == "" || clientSecret == "" {
+			log.Printf("[VK Auth] skipping incomplete VKTURN_VK_CREDENTIALS entry")
+			continue
+		}
+		credentials = append(credentials, VKCredentials{ClientID: clientID, ClientSecret: clientSecret})
+	}
+	return credentials
 }
 
 type TurnCredentials struct {
@@ -622,7 +644,7 @@ func getCacheID(streamID int) int {
 }
 
 func vkDelayRandom(minMs, maxMs int) {
-	ms := minMs + rand.Intn(maxMs-minMs+1)
+	ms := minMs + secureIntn(maxMs-minMs+1)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
@@ -660,12 +682,8 @@ func isAuthError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "401") ||
-		strings.Contains(errStr, "Unauthorized") ||
-		strings.Contains(errStr, "authentication") ||
-		strings.Contains(errStr, "invalid credential") ||
-		strings.Contains(errStr, "stale nonce")
+	diagnosis := providerstate.ClassifyError(statusmodel.ProviderVK, err)
+	return diagnosis.Code == statusmodel.CodeProviderAuth
 }
 
 func handleAuthError(streamID int) bool {
@@ -745,7 +763,7 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int, dial
 	defer vkRequestMu.Unlock()
 
 	// Ensure a minimum cooldown between credential requests to avoid VK rate limits
-	minInterval := 3*time.Second + time.Duration(rand.Intn(3000))*time.Millisecond
+	minInterval := 3*time.Second + time.Duration(secureIntn(3000))*time.Millisecond
 	elapsed := time.Since(globalLastVkFetchTime)
 
 	if !globalLastVkFetchTime.IsZero() && elapsed < minInterval {
@@ -774,7 +792,12 @@ func fetchVkCreds(ctx context.Context, link string, streamID int, dialer *dnsdia
 	var lastErr error
 	jar := tlsclient.NewCookieJar()
 
-	for _, creds := range vkCredentialsList {
+	credentials := vkCredentialsFromEnv()
+	if len(credentials) == 0 {
+		return "", "", "", fmt.Errorf("VK credentials are required: set VKTURN_VK_CREDENTIALS=client_id:client_secret[,client_id:client_secret]")
+	}
+
+	for _, creds := range credentials {
 		log.Printf("[STREAM %d] [VK Auth] Trying credentials: client_id=%s", streamID, creds.ClientID)
 
 		user, pass, addr, err := getTokenChain(ctx, link, streamID, creds, dialer, jar)
@@ -1053,6 +1076,10 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		return "", "", "", err
 	}
 
+	return parseVKTurnServer(resp)
+}
+
+func parseVKTurnServer(resp map[string]interface{}) (string, string, string, error) {
 	tsRaw, ok := resp["turn_server"].(map[string]interface{})
 	if !ok {
 		return "", "", "", fmt.Errorf("missing turn_server in response: %v", resp)
@@ -1422,7 +1449,7 @@ func dtlsFunc(ctx context.Context, conn net.PacketConn, peer *net.UDPAddr) (net.
 }
 
 func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.PacketConn, inboundChan <-chan *UDPPacket, connchan chan<- net.PacketConn, okchan chan<- struct{}, streamID int) error {
-	time.Sleep(time.Duration(rand.Intn(400)+100) * time.Millisecond)
+	time.Sleep(time.Duration(secureIntn(400)+100) * time.Millisecond)
 
 	dtlsctx, dtlscancel := context.WithCancel(ctx)
 	defer dtlscancel()
@@ -1516,11 +1543,12 @@ func (c *connectedUDPConn) WriteTo(p []byte, _ net.Addr) (int, error) {
 }
 
 type turnParams struct {
-	host     string
-	port     string
-	link     string
-	udp      bool
-	getCreds getCredsFunc
+	host      string
+	port      string
+	link      string
+	udp       bool
+	devDirect bool
+	getCreds  getCredsFunc
 }
 
 type turnRelaySession struct {
@@ -1640,7 +1668,7 @@ func dialTURNTransport(ctx context.Context, useUDP bool, turnServerUDPAddr *net.
 }
 
 func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UDPAddr, conn2 net.PacketConn, streamID int, c chan<- error) {
-	time.Sleep(time.Duration(rand.Intn(400)+100) * time.Millisecond)
+	time.Sleep(time.Duration(secureIntn(400)+100) * time.Millisecond)
 	var err error
 	defer func() { c <- err }()
 	turnSession, err1 := createTURNRelaySession(ctx, turnParams, peer, streamID)
@@ -1746,7 +1774,7 @@ func oneDtlsConnectionLoop(ctx context.Context, peer *net.UDPAddr, listenConn ne
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(time.Duration(10+rand.Intn(20)) * time.Second):
+				case <-time.After(time.Duration(10+secureIntn(20)) * time.Second):
 				}
 			}
 		}
@@ -1830,6 +1858,7 @@ func main() {
 	n := flag.Int("n", 0, "connections to TURN (default 10 for VK, 1 for Yandex)")
 	udp := flag.Bool("udp", false, "connect to TURN with UDP")
 	vlessMode := flag.Bool("vless", false, "VLESS mode: forward TCP connections (for VLESS) instead of UDP packets")
+	devDirect := flag.Bool("dev-direct", false, "DEV ONLY: bypass TURN provider and connect DTLS directly to peer")
 	debugFlag := flag.Bool("debug", false, "enable debug logging")
 	manualCaptchaFlag := flag.Bool("manual-captcha", false, "skip auto captcha solving, use manual mode immediately")
 	flag.Parse()
@@ -1840,7 +1869,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if (*vklink == "") == (*yalink == "") {
+	if *devDirect && !*vlessMode {
+		log.Panicf("-dev-direct requires -vless")
+	}
+	if *devDirect && (*vklink != "" || *yalink != "") {
+		log.Panicf("-dev-direct cannot be combined with provider links")
+	}
+	if !*devDirect && ((*vklink == "") == (*yalink == "")) {
 		log.Panicf("Need either vk-link or yandex-link!")
 	}
 
@@ -1850,7 +1885,12 @@ func main() {
 
 	var link string
 	var getCreds getCredsFunc
-	if *vklink != "" {
+	if *devDirect {
+		link = "dev-direct"
+		if *n <= 0 {
+			*n = 1
+		}
+	} else if *vklink != "" {
 		parts := strings.Split(*vklink, "join/")
 		link = parts[len(parts)-1]
 
@@ -1876,16 +1916,19 @@ func main() {
 			*n = 1
 		}
 	}
-	if idx := strings.IndexAny(link, "/?#"); idx != -1 {
-		link = link[:idx]
+	if !*devDirect {
+		if idx := strings.IndexAny(link, "/?#"); idx != -1 {
+			link = link[:idx]
+		}
 	}
 
 	params := &turnParams{
-		host:     *host,
-		port:     *port,
-		link:     link,
-		udp:      *udp,
-		getCreds: getCreds,
+		host:      *host,
+		port:      *port,
+		link:      link,
+		udp:       *udp,
+		devDirect: *devDirect,
+		getCreds:  getCreds,
 	}
 
 	if *vlessMode {
@@ -2158,22 +2201,33 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 		}
 	}
 
-	// 1. Create TURN client and allocate relay.
-	turnSession, err := createTURNRelaySession(ctx, tp, peer, id)
-	if err != nil {
-		return nil, nil, err
+	var dtlsPC net.PacketConn
+	if tp.devDirect {
+		udpConn, err := net.ListenUDP("udp", nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dev direct UDP listen: %w", err)
+		}
+		cleanupFns = append(cleanupFns, func() { _ = udpConn.Close() })
+		dtlsPC = &relayPacketConn{relay: udpConn, peer: peer}
+		log.Printf("[session %d] dev-direct local-address=%s peer=%s", id, udpConn.LocalAddr(), peer)
+	} else {
+		// 1. Create TURN client and allocate relay.
+		turnSession, err := createTURNRelaySession(ctx, tp, peer, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		cleanupFns = append(cleanupFns, func() { _ = turnSession.close() })
+		relayConn := turnSession.relayConn
+		dtlsPC = &relayPacketConn{relay: relayConn, peer: peer}
+		log.Printf("relayed-address=%s", relayConn.LocalAddr().String())
 	}
-	cleanupFns = append(cleanupFns, func() { _ = turnSession.close() })
-	relayConn := turnSession.relayConn
-	log.Printf("relayed-address=%s", relayConn.LocalAddr().String())
 
-	// 2. Establish DTLS over TURN relay.
+	// 2. Establish DTLS over TURN relay, or directly over UDP in dev lab mode.
 	certificate, err := selfsign.GenerateSelfSigned()
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("generate cert: %w", err)
 	}
-	dtlsPC := &relayPacketConn{relay: relayConn, peer: peer}
 	dtlsConn, err := dtls.ClientWithOptions(dtlsPC, peer,
 		dtls.WithCertificates(certificate),
 		dtls.WithInsecureSkipVerify(true),
