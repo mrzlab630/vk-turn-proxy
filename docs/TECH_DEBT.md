@@ -41,6 +41,8 @@ actionable: move items out when they are fixed or deliberately accepted.
   `internal/providerstate`.
 - `tcputil.NewKCPOverDTLS` has a loopback DTLS fixture test proving a KCP
   client/server round trip.
+- VK app credentials are supplied through the documented
+  `VKTURN_VK_CREDENTIALS` override instead of a committed application list.
 
 ## Remaining Debt
 
@@ -52,8 +54,6 @@ actionable: move items out when they are fixed or deliberately accepted.
   `captcha.go` owns shared captcha parsing and solve-mode control.
 - The current VK/Yandex flows depend on private browser APIs. Parser coverage
   should be expanded before changing request payloads.
-- The hardcoded VK application credential list is operationally fragile. If it
-  changes frequently, move it behind a documented config/env override.
 - Route helper scripts are platform-specific and not covered by tests.
 - Runtime integration tests now cover fake UDP/TCP backends, local status API,
   and a Docker Xray/VLESS lab. Next integration debt is to expose provider

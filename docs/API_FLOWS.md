@@ -7,7 +7,7 @@ without public changelogs.
 
 ## VK Calls TURN Credentials
 
-Source: `client/main.go`, `getTokenChain`.
+Source: `client/vk_auth.go`, `client/vk_token_chain.go`, `getTokenChain`.
 
 Fixture coverage lives under `client/testdata/vk/` and is exercised by
 `go test ./client`. Default tests never call VK. Live VK validation is opt-in
@@ -18,8 +18,10 @@ variables.
 
 - Invite link: `https://vk.com/call/join/<join_id>`.
 - The code stores only `<join_id>` after trimming `/`, `?`, and `#` suffixes.
-- One of the hardcoded browser application credential pairs from
-  `vkCredentialsList`.
+- At least one VK browser application credential pair in
+  `VKTURN_VK_CREDENTIALS`, formatted as
+  `client_id:client_secret[,client_id:client_secret...]`. Malformed or
+  incomplete entries are skipped.
 
 ### Flow
 
@@ -263,7 +265,8 @@ the client and should be treated as best-effort and drift-prone.
 - Browser fingerprint, SDK version, `capabilities`, and `protocolVersion` are
   likely high-drift values.
 - TURN URLs can switch address family, transport, or include query parameters.
-- Hardcoded VK app credentials may be rate-limited or invalidated.
+- VK app credentials supplied through `VKTURN_VK_CREDENTIALS` may be
+  rate-limited or invalidated.
 
 When changing these flows, update this file and add parser tests for every new
 response shape before changing transport code.
