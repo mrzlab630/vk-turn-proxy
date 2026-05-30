@@ -1,0 +1,9 @@
+{
+  "uri": "https://telemost.yandex.ru/j/room-1",
+  "room_id": "room-1",
+  "peer_id": "peer-1",
+  "credentials": "conf-credentials",
+  "client_configuration": {
+    "media_server_url": "wss://media.example.test/ws"
+  }
+}

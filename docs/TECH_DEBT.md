@@ -39,6 +39,8 @@ actionable: move items out when they are fixed or deliberately accepted.
 - VK provider readiness has fixture-backed captcha/TURN response parser tests,
   an opt-in-only live VK proof, and shared provider error classification in
   `internal/providerstate`.
+- Yandex Telemost conference and WebSocket TURN parser shapes have fixture
+  coverage for current best-effort support.
 - `tcputil.NewKCPOverDTLS` has a loopback DTLS fixture test proving a KCP
   client/server round trip.
 - VK app credentials are supplied through the documented
@@ -57,8 +59,9 @@ actionable: move items out when they are fixed or deliberately accepted.
   and UDP relay transport, `dtls_udp.go` owns the non-VLESS DTLS packet loop,
   `vk_token_chain.go` owns VK token request/captcha orchestration, and
   `captcha.go` owns shared captcha parsing and solve-mode control.
-- The current VK/Yandex flows depend on private browser APIs. Parser coverage
-  should be expanded before changing request payloads.
+- The current VK/Yandex flows depend on private browser APIs. Add fresh parser
+  fixtures for every newly observed response shape before changing request
+  payloads.
 - Route helper scripts still need live platform validation on Linux/macOS/Windows
   before relying on them for production operator workflows; macOS/Windows are
   not executable in the current Linux CI/dev environment.

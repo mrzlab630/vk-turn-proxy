@@ -17,22 +17,120 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type yandexConferenceResponse struct {
+	URI                 string `json:"uri"`
+	RoomID              string `json:"room_id"`
+	PeerID              string `json:"peer_id"`
+	ClientConfiguration struct {
+		MediaServerURL string `json:"media_server_url"`
+	} `json:"client_configuration"`
+	Credentials string `json:"credentials"`
+}
+
+type yandexWSSData struct {
+	ParticipantID string
+	RoomID        string
+	Credentials   string
+	Wss           string
+}
+
+type yandexFlexURLs []string
+
+func (urls *yandexFlexURLs) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*urls = []string{single}
+		return nil
+	}
+
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return err
+	}
+	*urls = many
+	return nil
+}
+
+type yandexWSSResponse struct {
+	UID         string `json:"uid"`
+	ServerHello struct {
+		RtcConfiguration struct {
+			IceServers []struct {
+				Urls       yandexFlexURLs `json:"urls"`
+				Username   string         `json:"username,omitempty"`
+				Credential string         `json:"credential,omitempty"`
+			} `json:"iceServers"`
+		} `json:"rtcConfiguration"`
+	} `json:"serverHello"`
+}
+
+func parseYandexConferenceResponse(body io.Reader) (yandexWSSData, error) {
+	var result yandexConferenceResponse
+	if err := json.NewDecoder(body).Decode(&result); err != nil {
+		return yandexWSSData{}, err
+	}
+	if strings.TrimSpace(result.RoomID) == "" {
+		return yandexWSSData{}, fmt.Errorf("missing room_id in conference response")
+	}
+	if strings.TrimSpace(result.PeerID) == "" {
+		return yandexWSSData{}, fmt.Errorf("missing peer_id in conference response")
+	}
+	if strings.TrimSpace(result.Credentials) == "" {
+		return yandexWSSData{}, fmt.Errorf("missing credentials in conference response")
+	}
+	if strings.TrimSpace(result.ClientConfiguration.MediaServerURL) == "" {
+		return yandexWSSData{}, fmt.Errorf("missing client_configuration.media_server_url in conference response")
+	}
+
+	return yandexWSSData{
+		ParticipantID: result.PeerID,
+		RoomID:        result.RoomID,
+		Credentials:   result.Credentials,
+		Wss:           result.ClientConfiguration.MediaServerURL,
+	}, nil
+}
+
+func parseYandexTURNServerMessage(msg []byte) (string, string, string, bool, error) {
+	var resp yandexWSSResponse
+	if err := json.Unmarshal(msg, &resp); err != nil {
+		return "", "", "", false, nil
+	}
+
+	ice := resp.ServerHello.RtcConfiguration.IceServers
+	if len(ice) == 0 {
+		return "", "", "", false, nil
+	}
+
+	for _, server := range ice {
+		for _, url := range server.Urls {
+			if !strings.HasPrefix(url, "turn:") && !strings.HasPrefix(url, "turns:") {
+				continue
+			}
+			if strings.Contains(url, "transport=tcp") {
+				continue
+			}
+			if strings.TrimSpace(server.Username) == "" {
+				return "", "", "", false, fmt.Errorf("missing username in Yandex ICE server")
+			}
+			if strings.TrimSpace(server.Credential) == "" {
+				return "", "", "", false, fmt.Errorf("missing credential in Yandex ICE server")
+			}
+
+			clean := strings.Split(url, "?")[0]
+			address := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
+			return server.Username, server.Credential, address, true, nil
+		}
+	}
+
+	return "", "", "", false, nil
+}
+
 func getYandexCreds(link string) (string, string, string, error) {
 	const telemostConfHost = "cloud-api.yandex.ru"
 	telemostConfPath := fmt.Sprintf("%s%s%s", "/telemost_front/v2/telemost/conferences/https%3A%2F%2Ftelemost.yandex.ru%2Fj%2F", link, "/connection?next_gen_media_platform_allowed=false")
 
 	profile := getRandomProfile()
 	name := generateName()
-
-	type ConferenceResponse struct {
-		URI                 string `json:"uri"`
-		RoomID              string `json:"room_id"`
-		PeerID              string `json:"peer_id"`
-		ClientConfiguration struct {
-			MediaServerURL string `json:"media_server_url"`
-		} `json:"client_configuration"`
-		Credentials string `json:"credentials"`
-	}
 
 	type PartMeta struct {
 		Name        string `json:"name"`
@@ -104,21 +202,6 @@ func getYandexCreds(link string) (string, string, string, error) {
 		Hello HelloPayload `json:"hello"`
 	}
 
-	type FlexUrls []string
-
-	type WSSResponse struct {
-		UID         string `json:"uid"`
-		ServerHello struct {
-			RtcConfiguration struct {
-				IceServers []struct {
-					Urls       FlexUrls `json:"urls"`
-					Username   string   `json:"username,omitempty"`
-					Credential string   `json:"credential,omitempty"`
-				} `json:"iceServers"`
-			} `json:"rtcConfiguration"`
-		} `json:"serverHello"`
-	}
-
 	type WSSAck struct {
 		UID string `json:"uid"`
 		Ack struct {
@@ -126,13 +209,6 @@ func getYandexCreds(link string) (string, string, string, error) {
 				Code string `json:"code"`
 			} `json:"status"`
 		} `json:"ack"`
-	}
-
-	type WSSData struct {
-		ParticipantID string
-		RoomID        string
-		Credentials   string
-		Wss           string
 	}
 
 	endpoint := "https://" + telemostConfHost + telemostConfPath
@@ -174,15 +250,9 @@ func getYandexCreds(link string) (string, string, string, error) {
 		return "", "", "", fmt.Errorf("GetConference: status=%s body=%s", resp.Status, string(readBody))
 	}
 
-	var result ConferenceResponse
-	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	data, err := parseYandexConferenceResponse(resp.Body)
+	if err != nil {
 		return "", "", "", fmt.Errorf("decode conf: %v", err)
-	}
-	data := WSSData{
-		ParticipantID: result.PeerID,
-		RoomID:        result.RoomID,
-		Credentials:   result.Credentials,
-		Wss:           result.ClientConfiguration.MediaServerURL,
 	}
 	h := http.Header{}
 	h.Set("Origin", "https://telemost.yandex.ru")
@@ -301,23 +371,12 @@ func getYandexCreds(link string) (string, string, string, error) {
 			continue
 		}
 
-		var resp WSSResponse
-		if err := json.Unmarshal(msg, &resp); err == nil {
-			ice := resp.ServerHello.RtcConfiguration.IceServers
-			for _, s := range ice {
-				for _, u := range s.Urls {
-					if !strings.HasPrefix(u, "turn:") && !strings.HasPrefix(u, "turns:") {
-						continue
-					}
-					if strings.Contains(u, "transport=tcp") {
-						continue
-					}
-					clean := strings.Split(u, "?")[0]
-					address := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
-
-					return s.Username, s.Credential, address, nil
-				}
-			}
+		user, pass, address, found, err := parseYandexTURNServerMessage(msg)
+		if err != nil {
+			return "", "", "", err
+		}
+		if found {
+			return user, pass, address, nil
 		}
 	}
 }

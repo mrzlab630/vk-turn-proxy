@@ -1,0 +1,8 @@
+{
+  "uid": "message-ack",
+  "ack": {
+    "status": {
+      "code": "OK"
+    }
+  }
+}

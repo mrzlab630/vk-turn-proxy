@@ -256,6 +256,16 @@ the client and should be treated as best-effort and drift-prone.
    The client skips `transport=tcp` URLs, strips `turn:`/`turns:` and query
    string, then returns `username`, `credential`, and address.
 
+Current fixture names:
+
+- `conference_success.json`
+- `conference_missing_wss.json`
+- `wss_turn_success.json`
+- `wss_turn_string_url.json`
+- `wss_ack.json`
+- `wss_tcp_only.json`
+- `wss_missing_credential.json`
+
 ## Drift Risks
 
 - VK and Yandex endpoints here are browser-facing/private, not stable public

@@ -1,0 +1,14 @@
+{
+  "uid": "message-4",
+  "serverHello": {
+    "rtcConfiguration": {
+      "iceServers": [
+        {
+          "urls": "turn:turn.example.test:3478?transport=tcp",
+          "username": "turn-user",
+          "credential": "turn-pass"
+        }
+      ]
+    }
+  }
+}
