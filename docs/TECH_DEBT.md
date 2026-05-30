@@ -43,8 +43,9 @@ actionable: move items out when they are fixed or deliberately accepted.
   client/server round trip.
 - VK app credentials are supplied through the documented
   `VKTURN_VK_CREDENTIALS` override instead of a committed application list.
-- Route helper scripts have a repo-local static smoke proof that avoids host
-  route changes.
+- Route helper scripts have a repo-local smoke proof that dry-runs the Linux
+  helper and statically validates macOS/Windows helpers without host route
+  changes.
 - Provider state transitions can be recorded into the existing status API and
   event stream without a separate provider-control endpoint.
 
@@ -59,7 +60,8 @@ actionable: move items out when they are fixed or deliberately accepted.
 - The current VK/Yandex flows depend on private browser APIs. Parser coverage
   should be expanded before changing request payloads.
 - Route helper scripts still need live platform validation on Linux/macOS/Windows
-  before relying on them for production operator workflows.
+  before relying on them for production operator workflows; macOS/Windows are
+  not executable in the current Linux CI/dev environment.
 - Runtime integration tests now cover fake UDP/TCP backends, local status API,
   provider-state status/event exposure, and a Docker Xray/VLESS lab. Next
   integration debt is wiring live client provider transitions into the status

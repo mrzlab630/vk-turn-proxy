@@ -58,8 +58,9 @@ the lab does not depend on global Docker daemon DNS changes.
   `health`, `status`, `events`, `logs`, redaction-ready empty logs, and
   loopback bind enforcement.
 - `dev/scripts/prove-route-helpers.sh` - static smoke test for Linux, macOS,
-  and Windows route helper scripts. It validates syntax/structure only and does
-  not add or remove host routes.
+  and Windows route helper scripts. It executes the Linux helper in `--dry-run`
+  mode with a fixture gateway, validates macOS/Windows helper structure, and
+  does not add or remove host routes.
 - `dev/scripts/prove-docker-build.sh` - production image build proof. It first
   runs plain `docker build`; if Docker Desktop DNS blocks Go module downloads,
   it retries with host-resolved `proxy.golang.org` and `sum.golang.org` pins
