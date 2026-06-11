@@ -128,6 +128,7 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 		return cfg, nil
 	}
 
+	// #nosec G304 -- -config is an explicit operator-selected server config file.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, fmt.Errorf("read server config: %w", err)

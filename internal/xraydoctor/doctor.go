@@ -219,6 +219,7 @@ func discoverServices(root string, names []string) []ServiceCandidate {
 				continue
 			}
 			seen[path] = true
+			// #nosec G304 -- service files are read-only probes under the operator-selected root.
 			data, err := os.ReadFile(path)
 			if err != nil {
 				continue
@@ -242,6 +243,7 @@ func discoverProcesses(root, explicitSnapshot string) []ProcessCandidate {
 	if snapshotPath == "" {
 		snapshotPath = rootedPath(root, "/run/processes.txt")
 	}
+	// #nosec G304 -- process snapshot path is an explicit fixture/operator input for read-only diagnostics.
 	data, err := os.ReadFile(snapshotPath)
 	if err != nil {
 		return nil

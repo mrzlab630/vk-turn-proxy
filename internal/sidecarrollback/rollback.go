@@ -151,6 +151,7 @@ func plannedRemovalPaths(manifest sidecarinstall.Manifest) []removalPath {
 }
 
 func readManifest(path string) (sidecarinstall.Manifest, error) {
+	// #nosec G304 -- manifest path is derived from the required dry-run root.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return sidecarinstall.Manifest{}, err

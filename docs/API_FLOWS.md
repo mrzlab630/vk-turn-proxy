@@ -265,6 +265,7 @@ Current fixture names:
 - `wss_ack.json`
 - `wss_tcp_only.json`
 - `wss_missing_credential.json`
+- `wss_invalid_urls_type.json`
 
 ## Drift Risks
 

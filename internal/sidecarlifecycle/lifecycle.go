@@ -91,8 +91,12 @@ func run(action string, opts Options) (Result, error) {
 	if opts.LogStream == "" {
 		opts.LogStream = "server.log"
 	}
+	logStream, err := sanitizeLogStream(opts.LogStream)
+	if err != nil {
+		return Result{}, err
+	}
 
-	paths := buildPaths(opts.Root, opts.LogStream)
+	paths := buildPaths(opts.Root, logStream)
 	result := Result{
 		Action:       action,
 		DryRun:       true,
@@ -195,6 +199,7 @@ func buildPaths(root, logStream string) lifecyclePaths {
 }
 
 func readState(path string) (string, error) {
+	// #nosec G304 -- state path is derived from the required dry-run root.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -213,25 +218,26 @@ func readState(path string) (string, error) {
 }
 
 func writeState(path string, state stateFile) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("render state: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	return nil
 }
 
 func appendJournal(path string, timestamp time.Time, action, message string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create journal dir: %w", err)
 	}
 	line := fmt.Sprintf("%s action=%s %s\n", timestamp.Format(time.RFC3339), action, message)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// #nosec G304 -- journal path is derived from the required dry-run root.
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open journal: %w", err)
 	}
@@ -243,6 +249,7 @@ func appendJournal(path string, timestamp time.Time, action, message string) err
 }
 
 func readTail(path string, maxLines int) ([]string, error) {
+	// #nosec G304 -- log path is derived from the required dry-run root and fixed stream name.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -259,6 +266,17 @@ func readTail(path string, maxLines int) ([]string, error) {
 		lines = lines[len(lines)-maxLines:]
 	}
 	return lines, nil
+}
+
+func sanitizeLogStream(logStream string) (string, error) {
+	trimmed := strings.TrimSpace(logStream)
+	if trimmed == "" {
+		return "server.log", nil
+	}
+	if filepath.IsAbs(trimmed) || strings.ContainsAny(trimmed, `/\`) || trimmed != filepath.Base(trimmed) {
+		return "", fmt.Errorf("log stream must be a file name under %s", sidecarinstall.DefaultLogDir)
+	}
+	return trimmed, nil
 }
 
 func rootedPath(root, path string) string {

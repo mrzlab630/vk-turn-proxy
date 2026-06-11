@@ -72,6 +72,8 @@ func DefaultPlanOptions() PlanOptions {
 }
 
 func ParseConfigFile(path string) ([]VLESSInbound, error) {
+	// #nosec G304 -- path is the explicit operator-selected Xray config or a
+	// fixture-root path built by doctor/plan commands.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read Xray config: %w", err)
@@ -183,7 +185,7 @@ func BuildPlan(opts PlanOptions) (Plan, error) {
 		opts.PortBusy = UDPPortBusyChecker(opts.SidecarListen)
 	}
 	if strings.TrimSpace(opts.XrayConfigPath) == "" {
-		return Plan{}, fmt.Errorf("Xray config path is required")
+		return Plan{}, fmt.Errorf("xray config path is required")
 	}
 
 	inbounds, err := ParseConfigFile(opts.XrayConfigPath)

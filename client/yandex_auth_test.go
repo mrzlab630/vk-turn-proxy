@@ -89,6 +89,32 @@ func TestParseYandexTURNServerMessage(t *testing.T) {
 			t.Fatalf("error = %v, want missing credential", err)
 		}
 	})
+
+	t.Run("invalid serverHello urls type is explicit", func(t *testing.T) {
+		t.Parallel()
+
+		msg := []byte(readYandexFixture(t, "wss_invalid_urls_type.json"))
+		_, _, _, found, err := parseYandexTURNServerMessage(msg)
+		if found {
+			t.Fatal("invalid serverHello should not be reported as found")
+		}
+		if err == nil || !strings.Contains(err.Error(), "decode Yandex serverHello") {
+			t.Fatalf("error = %v, want decode Yandex serverHello", err)
+		}
+	})
+
+	t.Run("unrelated json mentioning serverHello is ignored", func(t *testing.T) {
+		t.Parallel()
+
+		msg := []byte(`{"log":"serverHello appeared in text"}`)
+		_, _, _, found, err := parseYandexTURNServerMessage(msg)
+		if err != nil {
+			t.Fatalf("unrelated JSON should not be an error: %v", err)
+		}
+		if found {
+			t.Fatal("unrelated JSON should not contain TURN server")
+		}
+	})
 }
 
 func readYandexFixture(t *testing.T, name string) string {

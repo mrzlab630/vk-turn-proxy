@@ -99,3 +99,32 @@ func TestIsSafeGenericProxyTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSafeLocalCaptchaBrowserURL(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		rawURL string
+		want   bool
+	}{
+		{name: "allows localhost captcha", rawURL: "http://localhost:8765/captcha?step=2", want: true},
+		{name: "allows ipv4 loopback captcha", rawURL: "http://127.0.0.1:8765/", want: true},
+		{name: "allows ipv6 loopback captcha", rawURL: "http://[::1]:8765/", want: true},
+		{name: "blocks https", rawURL: "https://localhost:8765/", want: false},
+		{name: "blocks wrong port", rawURL: "http://localhost:8766/", want: false},
+		{name: "blocks remote host", rawURL: "http://evil.example/captcha", want: false},
+		{name: "blocks userinfo", rawURL: "http://user@localhost:8765/", want: false},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isSafeLocalCaptchaBrowserURL(tc.rawURL); got != tc.want {
+				t.Fatalf("isSafeLocalCaptchaBrowserURL(%q) = %v, want %v", tc.rawURL, got, tc.want)
+			}
+		})
+	}
+}

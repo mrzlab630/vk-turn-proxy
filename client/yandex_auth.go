@@ -91,9 +91,16 @@ func parseYandexConferenceResponse(body io.Reader) (yandexWSSData, error) {
 }
 
 func parseYandexTURNServerMessage(msg []byte) (string, string, string, bool, error) {
+	var envelope struct {
+		ServerHello json.RawMessage `json:"serverHello"`
+	}
+	if err := json.Unmarshal(msg, &envelope); err != nil || len(envelope.ServerHello) == 0 {
+		return "", "", "", false, nil
+	}
+
 	var resp yandexWSSResponse
 	if err := json.Unmarshal(msg, &resp); err != nil {
-		return "", "", "", false, nil
+		return "", "", "", false, fmt.Errorf("decode Yandex serverHello: %w", err)
 	}
 
 	ice := resp.ServerHello.RtcConfiguration.IceServers

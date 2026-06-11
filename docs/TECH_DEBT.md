@@ -50,6 +50,18 @@ actionable: move items out when they are fixed or deliberately accepted.
   changes.
 - Provider state transitions can be recorded into the existing status API and
   event stream without a separate provider-control endpoint.
+- Scanner-driven hardening now covers the local status/captcha HTTP servers
+  with `ReadHeaderTimeout`, constrains manual captcha browser launches to the
+  local captcha listener URL, escapes manual captcha proxy error HTML, and
+  avoids logging proxied request URLs from the captcha proxy error path.
+- Dry-run sidecar install/lifecycle artifacts now use restricted file modes for
+  config/env/manifest/state/journal data, reject artifact paths outside the
+  selected dry-run root, and restrict lifecycle log stream selection to a file
+  name under `/var/log/vk-turn-proxy`.
+- `golang.org/x/net` is upgraded past the `GO-2026-5026` `idna` advisory, and
+  `govulncheck` reports no called vulnerable symbols in the current code.
+- Yandex Telemost parser drift now treats invalid `serverHello` TURN URL shapes
+  as explicit parser errors while still ignoring unrelated WebSocket messages.
 
 ## Remaining Debt
 
@@ -75,10 +87,13 @@ actionable: move items out when they are fixed or deliberately accepted.
 Run these before merging functional changes:
 
 ```bash
-gofmt -w client server tcputil
+gofmt -w client cmd server tcputil internal
 go test ./...
 go vet ./...
 go test -race ./...
+go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+go run github.com/securego/gosec/v2/cmd/gosec@latest ./...
 ```
 
 For changes touching Docker or release packaging:

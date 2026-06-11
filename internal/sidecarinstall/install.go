@@ -21,6 +21,7 @@ const (
 	DefaultUnitPath    = "/etc/systemd/system/vkturn-server.service"
 	DefaultLogDir      = "/var/log/vk-turn-proxy"
 	DefaultManifest    = "/etc/vkturn/install-manifest.json"
+	parentDirMode      = 0o750
 )
 
 type Options struct {
@@ -105,7 +106,7 @@ func BuildDryRun(opts Options) (Result, error) {
 			Kind:       "directory",
 			Path:       filepath.Dir(DefaultConfigPath),
 			RootedPath: rootedPath(opts.Root, filepath.Dir(DefaultConfigPath)),
-			Mode:       "0755",
+			Mode:       "0750",
 		},
 		{
 			Kind:       "directory",
@@ -117,20 +118,20 @@ func BuildDryRun(opts Options) (Result, error) {
 			Kind:       "directory",
 			Path:       DefaultLogDir,
 			RootedPath: rootedPath(opts.Root, DefaultLogDir),
-			Mode:       "0755",
+			Mode:       "0750",
 		},
 		{
 			Kind:       "file",
 			Path:       DefaultConfigPath,
 			RootedPath: rootedPath(opts.Root, DefaultConfigPath),
-			Mode:       "0644",
+			Mode:       "0600",
 			Content:    serverConfig,
 		},
 		{
 			Kind:       "file",
 			Path:       DefaultEnvPath,
 			RootedPath: rootedPath(opts.Root, DefaultEnvPath),
-			Mode:       "0644",
+			Mode:       "0600",
 			Content:    env,
 		},
 		{
@@ -144,7 +145,7 @@ func BuildDryRun(opts Options) (Result, error) {
 			Kind:       "file",
 			Path:       DefaultManifest,
 			RootedPath: rootedPath(opts.Root, DefaultManifest),
-			Mode:       "0644",
+			Mode:       "0600",
 			Content:    manifestContent,
 		},
 		{
@@ -273,7 +274,13 @@ func WriteDryRunArtifacts(result Result) error {
 	if !result.DryRun {
 		return fmt.Errorf("refusing to write non-dry-run artifacts")
 	}
+	if strings.TrimSpace(result.Root) == "" || result.Root == "/" {
+		return fmt.Errorf("refusing to write dry-run artifacts without a fixture root")
+	}
 	for _, artifact := range result.Artifacts {
+		if !isWithinRoot(result.Root, artifact.RootedPath) {
+			return fmt.Errorf("refusing to write artifact outside root: %s", artifact.RootedPath)
+		}
 		mode, err := parseFileMode(artifact.Mode)
 		if err != nil {
 			return fmt.Errorf("parse mode for %s: %w", artifact.Path, err)
@@ -284,14 +291,18 @@ func WriteDryRunArtifacts(result Result) error {
 				return fmt.Errorf("create directory %s: %w", artifact.RootedPath, err)
 			}
 		case "file":
-			if err := os.MkdirAll(filepath.Dir(artifact.RootedPath), 0o755); err != nil {
+			// #nosec G301 -- dry-run artifacts mirror system directories; final artifact
+			// permissions are enforced per artifact mode below.
+			if err := os.MkdirAll(filepath.Dir(artifact.RootedPath), parentDirMode); err != nil {
 				return fmt.Errorf("create parent %s: %w", filepath.Dir(artifact.RootedPath), err)
 			}
 			if err := os.WriteFile(artifact.RootedPath, []byte(artifact.Content), mode); err != nil {
 				return fmt.Errorf("write file %s: %w", artifact.RootedPath, err)
 			}
 		case "binary":
-			if err := os.MkdirAll(filepath.Dir(artifact.RootedPath), 0o755); err != nil {
+			// #nosec G301 -- executable install parent directories need traverse access;
+			// this dry-run never writes outside the supplied root.
+			if err := os.MkdirAll(filepath.Dir(artifact.RootedPath), parentDirMode); err != nil {
 				return fmt.Errorf("create parent %s: %w", filepath.Dir(artifact.RootedPath), err)
 			}
 			content := []byte("dry-run placeholder for vk-turn-proxy-server\n")
@@ -319,6 +330,12 @@ func rootedPath(root, path string) string {
 		clean = strings.TrimPrefix(clean, string(os.PathSeparator))
 	}
 	return filepath.Join(root, clean)
+}
+
+func isWithinRoot(root, path string) bool {
+	cleanRoot := filepath.Clean(root)
+	cleanPath := filepath.Clean(path)
+	return cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+string(os.PathSeparator))
 }
 
 func shellQuote(value string) string {

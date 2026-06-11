@@ -164,10 +164,13 @@ func startStatusAPI(ctx context.Context, addr string, runtime *RuntimeStatus) (n
 	}
 	mux := http.NewServeMux()
 	registerStatusHandlers(mux, runtime)
-	server := &http.Server{Handler: loopbackOnly(mux)}
+	server := &http.Server{
+		Handler:           loopbackOnly(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()

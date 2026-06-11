@@ -88,6 +88,38 @@ func TestWriteDryRunArtifactsWritesOnlyUnderRoot(t *testing.T) {
 	if _, err := os.Stat(unit); err != nil {
 		t.Fatalf("unit not written: %v", err)
 	}
+	assertPathMode(t, serverConfig, 0o600)
+	assertPathMode(t, filepath.Join(root, "etc", "vkturn", "install-manifest.json"), 0o600)
+	assertPathMode(t, filepath.Join(root, "etc", "default", "vkturn-server"), 0o600)
+	assertPathMode(t, filepath.Join(root, "etc", "vkturn"), 0o750)
+	assertPathMode(t, filepath.Join(root, "var", "log", "vk-turn-proxy"), 0o750)
+}
+
+func TestWriteDryRunArtifactsRejectsPathsOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "server.json")
+	result := Result{
+		DryRun: true,
+		Root:   root,
+		Artifacts: []Artifact{{
+			Kind:       "file",
+			Path:       DefaultConfigPath,
+			RootedPath: outside,
+			Mode:       "0600",
+			Content:    "{}\n",
+		}},
+	}
+
+	err := WriteDryRunArtifacts(result)
+	if err == nil {
+		t.Fatalf("WriteDryRunArtifacts accepted path outside root")
+	}
+	if !strings.Contains(err.Error(), "outside root") {
+		t.Fatalf("error = %v, want outside root context", err)
+	}
+	if _, statErr := os.Stat(outside); !os.IsNotExist(statErr) {
+		t.Fatalf("outside artifact was created or unexpected stat error: %v", statErr)
+	}
 }
 
 func testPlan() xrayplan.Plan {
@@ -123,4 +155,15 @@ func assertContains(t *testing.T, values []string, want string) {
 		}
 	}
 	t.Fatalf("%#v does not contain %q", values, want)
+}
+
+func assertPathMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode %s = %o, want %o", path, got, want)
+	}
 }

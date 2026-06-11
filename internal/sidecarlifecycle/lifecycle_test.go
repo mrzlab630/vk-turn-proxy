@@ -73,11 +73,29 @@ func TestLifecycleStartStatusStopRestartWithDryRunRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read journal: %v", err)
 	}
+	stateInfo, err := os.Stat(filepath.Join(root, "run", "vkturn", "server-state.json"))
+	if err != nil {
+		t.Fatalf("stat state file: %v", err)
+	}
+	if got := stateInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("state file mode = %o, want 0600", got)
+	}
+	journalInfo, err := os.Stat(filepath.Join(root, "run", "vkturn", "lifecycle.log"))
+	if err != nil {
+		t.Fatalf("stat journal file: %v", err)
+	}
+	if got := journalInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("journal file mode = %o, want 0600", got)
+	}
 	for _, want := range []string{"action=start", "action=restart", "action=stop"} {
 		if !strings.Contains(string(journal), want) {
 			t.Fatalf("journal missing %q:\n%s", want, string(journal))
 		}
 	}
+
+	assertFileMode(t, filepath.Join(root, "run", "vkturn"), 0o700)
+	assertFileMode(t, filepath.Join(root, "run", "vkturn", "server-state.json"), 0o600)
+	assertFileMode(t, filepath.Join(root, "run", "vkturn", "lifecycle.log"), 0o600)
 }
 
 func TestLifecycleLogsReadsTail(t *testing.T) {
@@ -96,6 +114,22 @@ func TestLifecycleLogsReadsTail(t *testing.T) {
 	}
 	if !strings.Contains(result.Message, "read 2 log line") {
 		t.Fatalf("message = %q, want log count", result.Message)
+	}
+}
+
+func TestLifecycleRejectsLogStreamPath(t *testing.T) {
+	root := installFixture(t)
+	_, err := Logs(Options{Root: root, DryRun: true, LogStream: "../secret.log"})
+	if err == nil {
+		t.Fatalf("Logs accepted path traversal log stream")
+	}
+	if !strings.Contains(err.Error(), "file name") {
+		t.Fatalf("error = %v, want file name context", err)
+	}
+
+	_, err = Logs(Options{Root: root, DryRun: true, LogStream: "/tmp/server.log"})
+	if err == nil {
+		t.Fatalf("Logs accepted absolute log stream")
 	}
 }
 
@@ -130,4 +164,15 @@ func installFixture(t *testing.T) string {
 		t.Fatalf("WriteDryRunArtifacts: %v", err)
 	}
 	return root
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode %s = %03o, want %03o", path, got, want)
+	}
 }

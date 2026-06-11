@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -142,6 +143,14 @@ func isSafeGenericProxyTarget(targetURL *neturl.URL) bool {
 		!addr.IsLinkLocalMulticast() &&
 		!addr.IsMulticast() &&
 		!addr.IsUnspecified()
+}
+
+func isSafeLocalCaptchaBrowserURL(raw string) bool {
+	parsed, err := neturl.Parse(raw)
+	if err != nil || parsed.User != nil {
+		return false
+	}
+	return parsed.Scheme == "http" && isLocalCaptchaHost(parsed.Host)
 }
 
 func rewriteProxyRequest(req *http.Request, targetURL *neturl.URL) {
@@ -405,7 +414,10 @@ func startCaptchaServer(srv *http.Server, logPrefix string) error {
 
 // runCaptchaServerAndWait triggers the browser and waits for the solution token.
 func runCaptchaServerAndWait(ctx context.Context, handler http.Handler, captchaURL string, keyCh <-chan string, logPrefix string) (string, error) {
-	srv := &http.Server{Handler: handler}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 
 	if err := startCaptchaServer(srv, logPrefix); err != nil {
 		return "", err
@@ -497,10 +509,10 @@ func solveCaptchaViaProxy(ctx context.Context, redirectURI string, dialer *dnsdi
 			rewriteProxyRequest(req.Out, targetURL)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("[Captcha Proxy] ERROR for %s %s: %v", r.Method, r.URL.String(), err)
+			log.Printf("[Captcha Proxy] ERROR handling request: %v", err)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><body style="font-family:sans-serif;padding:20px"><h2>Captcha proxy error</h2><p>%s %s</p><p>%v</p></body></html>`, r.Method, r.URL.String(), err)
+			_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><body style="font-family:sans-serif;padding:20px"><h2>Captcha proxy error</h2><p>%s %s</p><p>%s</p></body></html>`, html.EscapeString(r.Method), html.EscapeString(r.URL.String()), html.EscapeString(err.Error()))
 		},
 		ModifyResponse: func(res *http.Response) error {
 			rewriteProxyCookies(res.Header)
@@ -607,7 +619,7 @@ func solveCaptchaViaProxy(ctx context.Context, redirectURI string, dialer *dnsdi
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[Captcha Proxy] HTTP %s %s", r.Method, r.URL.String())
+		log.Print("[Captcha Proxy] HTTP request received")
 		if r.URL.Path == "/" && targetURL.Path != "" && targetURL.Path != "/" && r.URL.RawQuery == "" {
 			log.Printf("[Captcha Proxy] Redirecting ROOT to: %s", localCaptchaURLForTarget(targetURL))
 			http.Redirect(w, r, localCaptchaURLForTarget(targetURL), http.StatusTemporaryRedirect)
@@ -620,7 +632,13 @@ func solveCaptchaViaProxy(ctx context.Context, redirectURI string, dialer *dnsdi
 }
 
 func openBrowser(url string) {
+	if !isSafeLocalCaptchaBrowserURL(url) {
+		log.Printf("refusing to open non-local captcha URL: %q", url)
+		return
+	}
 	for _, cmd := range browserOpenCommands(runtime.GOOS, url) {
+		// #nosec G204 -- commands come from a fixed OS allowlist and url was
+		// validated as the local captcha listener URL above.
 		if err := exec.Command(cmd.name, cmd.args...).Start(); err == nil {
 			return
 		}

@@ -2,7 +2,6 @@ package main
 
 import (
 	crand "crypto/rand"
-	"encoding/binary"
 	"math/big"
 )
 
@@ -13,11 +12,6 @@ func secureIntn(max int) int {
 	value, err := crand.Int(crand.Reader, big.NewInt(int64(max)))
 	if err == nil {
 		return int(value.Int64())
-	}
-
-	var fallback [8]byte
-	if _, readErr := crand.Read(fallback[:]); readErr == nil {
-		return int(binary.BigEndian.Uint64(fallback[:]) % uint64(max))
 	}
 	return 0
 }
