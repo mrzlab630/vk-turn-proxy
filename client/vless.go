@@ -148,6 +148,7 @@ func maintainVLESSSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr
 
 		smuxSess, cleanup, err := createSmuxSession(ctx, tp, peer, id)
 		if err != nil {
+			logProviderCredentialDiagnosis(id, err)
 			log.Printf("[session %d] setup error: %s, retrying...", id, err)
 			select {
 			case <-ctx.Done():

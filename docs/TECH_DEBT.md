@@ -50,6 +50,9 @@ actionable: move items out when they are fixed or deliberately accepted.
   changes.
 - Provider state transitions can be recorded into the existing status API and
   event stream without a separate provider-control endpoint.
+- Client TURN credential acquisition now wraps VK/Yandex provider failures in a
+  typed provider diagnosis and logs the redacted state/code/retryability from
+  both UDP and VLESS session loops without changing provider request payloads.
 - Scanner-driven hardening now covers the local status/captcha HTTP servers
   with `ReadHeaderTimeout`, constrains manual captcha browser launches to the
   local captcha listener URL, escapes manual captcha proxy error HTML, and
@@ -79,8 +82,8 @@ actionable: move items out when they are fixed or deliberately accepted.
   not executable in the current Linux CI/dev environment.
 - Runtime integration tests now cover fake UDP/TCP backends, local status API,
   provider-state status/event exposure, and a Docker Xray/VLESS lab. Next
-  integration debt is wiring live client provider transitions into the status
-  surface after the client control channel is designed.
+  integration debt is designing the client control channel so live client
+  provider transitions can be persisted or served through the status surface.
 
 ## Quality Gates
 

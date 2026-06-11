@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/internal/statusmodel"
 	"github.com/pion/logging"
 	"github.com/pion/turn/v5"
 )
@@ -32,6 +33,7 @@ type turnParams struct {
 	link      string
 	udp       bool
 	devDirect bool
+	provider  statusmodel.ProviderName
 	getCreds  getCredsFunc
 }
 
@@ -66,7 +68,7 @@ func (s *turnRelaySession) close() error {
 func createTURNRelaySession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, streamID int) (*turnRelaySession, error) {
 	user, pass, urlTarget, err := tp.getCreds(ctx, tp.link, streamID)
 	if err != nil {
-		return nil, fmt.Errorf("get TURN credentials: %w", err)
+		return nil, fmt.Errorf("get TURN credentials: %w", newProviderCredentialError(tp.provider, err))
 	}
 
 	urlhost, urlport, err := net.SplitHostPort(urlTarget)
@@ -157,6 +159,7 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 	defer func() { c <- err }()
 	turnSession, err1 := createTURNRelaySession(ctx, turnParams, peer, streamID)
 	if err1 != nil {
+		logProviderCredentialDiagnosis(streamID, err1)
 		if isAuthError(err1) {
 			handleAuthError(streamID)
 		}

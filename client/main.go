@@ -21,6 +21,7 @@ import (
 	fhttp "github.com/bogdanfinn/fhttp"
 
 	"github.com/bschaatsbergen/dnsdialer"
+	"github.com/cacggghp/vk-turn-proxy/internal/statusmodel"
 	"github.com/pion/transport/v4"
 )
 
@@ -231,6 +232,7 @@ func main() {
 	autoCaptchaSliderPOC = !manualCaptcha
 
 	var link string
+	provider := statusmodel.ProviderNone
 	var getCreds getCredsFunc
 	if *devDirect {
 		link = "dev-direct"
@@ -238,6 +240,7 @@ func main() {
 			*n = 1
 		}
 	} else if *vklink != "" {
+		provider = statusmodel.ProviderVK
 		parts := strings.Split(*vklink, "join/")
 		link = parts[len(parts)-1]
 
@@ -254,6 +257,7 @@ func main() {
 			*n = 10
 		}
 	} else {
+		provider = statusmodel.ProviderYandex
 		parts := strings.Split(*yalink, "j/")
 		link = parts[len(parts)-1]
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
@@ -275,6 +279,7 @@ func main() {
 		link:      link,
 		udp:       *udp,
 		devDirect: *devDirect,
+		provider:  provider,
 		getCreds:  getCreds,
 	}
 

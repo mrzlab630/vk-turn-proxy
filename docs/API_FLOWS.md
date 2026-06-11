@@ -196,6 +196,12 @@ future Android client consumes them:
 - parser drift such as missing expected fields remains `unknown` so it is not
   hidden as a retry-only transport issue.
 
+Client TURN credential acquisition wraps provider failures in a typed provider
+diagnosis before the UDP and VLESS session loops log them. The wrapper preserves
+the original error for retry/auth handling while exposing provider name, state,
+stable code, retryability, and redacted message for the future status/control
+surface.
+
 ## Yandex Telemost TURN Credentials
 
 Source: `client/main.go`, `getYandexCreds`.
