@@ -613,6 +613,44 @@ curl -L -o client https://github.com/cacggghp/vk-turn-proxy/releases/latest/down
 3. На клиенте запустить `client` с флагом `-vless`
 4. Настроить Xray/v2rayN клиент с VLESS outbound на `127.0.0.1:9000`
 
+### Быстрая установка на чистый Linux VPS
+
+Для первого теста на Debian/Ubuntu можно запустить интерактивный установщик из
+корня склонированного проекта:
+
+```bash
+sudo bash dev/scripts/install-linux-vless-server.sh
+```
+
+Скрипт сам генерирует VLESS UUID, ставит недостающий Go toolchain и Xray из
+проверяемых архивов, собирает `vk-turn-proxy-server`, создает systemd units,
+стартует `xray.service` и `vkturn-server.service`, открывает UDP-порт в активном
+`ufw`/`firewalld` если они включены, и печатает данные для локального клиента.
+Итоговая памятка сохраняется на сервере в `/root/vkturn-install-result.txt`.
+Для совместного тестирования локального клиента скопируйте из этой памятки блок
+между `CODEX HANDOFF BEGIN` и `CODEX HANDOFF END` и передайте его агенту.
+
+Сухая проверка без изменения хоста:
+
+```bash
+DRY_RUN=1 NONINTERACTIVE=1 ASSUME_YES=1 \
+  SERVER_PUBLIC_ADDR=203.0.113.10 \
+  bash dev/scripts/install-linux-vless-server.sh
+```
+
+После установки на локальной Linux-машине соберите sidecar-клиент и используйте
+команду из `/root/vkturn-install-result.txt`:
+
+```bash
+go build -o ./dev/bin/vk-turn-proxy-client ./client
+./dev/bin/vk-turn-proxy-client -peer <SERVER_IP>:56000 -vk-link '<VK_LINK>' -listen 127.0.0.1:9000 -vless
+```
+
+В v2RayA добавьте локальный VLESS node на `127.0.0.1:9000` с тем же UUID,
+`encryption=none`, `network=tcp`, `security=none`. Для первых тестов v2RayA не
+нужно патчить: он выступает только как локальный Xray/VLESS UI, а туннель до VPS
+держит `vk-turn-proxy-client`.
+
 ### Сервер (VPS)
 ```
 ./server -listen 0.0.0.0:56000 -connect 127.0.0.1:443 -vless
