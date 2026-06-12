@@ -6,6 +6,7 @@ ROOT_DIR=$(cd "$SCRIPT_DIR/../.." && pwd)
 
 GO_VERSION=${GO_VERSION:-$(awk '/^go / { print $2; exit }' "$ROOT_DIR/go.mod")}
 XRAY_RELEASE_BASE=${XRAY_RELEASE_BASE:-https://github.com/XTLS/Xray-core/releases/latest/download}
+XRAY_BINARY_INPUT=${XRAY_BINARY:-}
 
 DEFAULT_SERVER_PUBLIC_ADDR=${SERVER_PUBLIC_ADDR:-}
 DEFAULT_VKTURN_UDP_PORT=${VKTURN_UDP_PORT:-56000}
@@ -15,6 +16,9 @@ DEFAULT_STATUS_PORT=${VKTURN_STATUS_PORT:-18081}
 DEFAULT_LOCAL_LISTEN=${LOCAL_VLESS_LISTEN:-127.0.0.1}
 DEFAULT_LOCAL_PORT=${LOCAL_VLESS_PORT:-9000}
 DEFAULT_VK_LINK=${VK_LINK:-}
+XRAY_LISTEN_INPUT=${XRAY_LISTEN:-}
+XRAY_PORT_INPUT=${XRAY_PORT:-}
+VLESS_UUID_INPUT=${VLESS_UUID:-}
 
 DRY_RUN=${DRY_RUN:-0}
 NONINTERACTIVE=${NONINTERACTIVE:-0}
@@ -23,6 +27,10 @@ FORCE=${FORCE:-0}
 START_SERVICES=${START_SERVICES:-1}
 CONFIGURE_FIREWALL=${CONFIGURE_FIREWALL:-1}
 DRY_RUN_ROOT=${DRY_RUN_ROOT:-}
+UPDATE_XRAY=${UPDATE_XRAY:-1}
+RESTART_XRAY=${RESTART_XRAY:-1}
+XRAY_CONFIG_MODE=${XRAY_CONFIG_MODE:-auto}
+XRAY_EXISTING_CONFIG=${XRAY_EXISTING_CONFIG:-}
 
 SERVICE_USER=${SERVICE_USER:-nobody}
 SERVICE_GROUP=${SERVICE_GROUP:-nogroup}
@@ -32,14 +40,36 @@ VKTURN_CONFIG=${VKTURN_CONFIG:-/etc/vkturn/server.json}
 VKTURN_PROFILE=${VKTURN_PROFILE:-/etc/vkturn/client-profile.env}
 VKTURN_UNIT=${VKTURN_UNIT:-/etc/systemd/system/vkturn-server.service}
 VKTURN_LOG_DIR=${VKTURN_LOG_DIR:-/var/log/vk-turn-proxy}
-XRAY_BINARY=${XRAY_BINARY:-/usr/local/bin/xray}
+XRAY_BINARY=${XRAY_BINARY_INPUT:-/usr/local/bin/xray}
 XRAY_CONFIG=${XRAY_CONFIG:-/etc/xray/config.json}
-XRAY_UNIT=${XRAY_UNIT:-/etc/systemd/system/xray.service}
+XRAY_SERVICE_NAME=${XRAY_SERVICE_NAME:-xray.service}
+XRAY_UNIT=${XRAY_UNIT:-/etc/systemd/system/$XRAY_SERVICE_NAME}
 XRAY_ASSET_DIR=${XRAY_ASSET_DIR:-/usr/local/share/xray}
 XRAY_MANAGED_ASSETS=${XRAY_MANAGED_ASSETS:-0}
 XRAY_LOG_DIR=${XRAY_LOG_DIR:-/var/log/xray}
+BACKUP_DIR=${BACKUP_DIR:-/var/backups/vk-turn-proxy}
 SUMMARY_PATH=${SUMMARY_PATH:-/root/vkturn-install-result.txt}
 GO_BINARY=${GO_BINARY:-}
+VLESS_NETWORK=${VLESS_NETWORK:-tcp}
+VLESS_SECURITY=${VLESS_SECURITY:-none}
+VLESS_ENCRYPTION=${VLESS_ENCRYPTION:-none}
+EXISTING_XRAY_IMPORTED=0
+EXISTING_XRAY_CONFIG=""
+EXISTING_XRAY_SERVICE=0
+EXISTING_XRAY_CONFIG_FOUND=0
+EXISTING_XRAY_BINARY=""
+EXISTING_XRAY_UNIT=""
+EXISTING_XRAY_CONFIG_FROM_SERVICE=""
+EXISTING_VLESS_TAG=""
+EXISTING_VLESS_UUID=""
+EXISTING_XRAY_LISTEN=""
+EXISTING_XRAY_PORT=""
+XRAY_STREAM_SETTINGS_B64=""
+XRAY_CLIENT_B64=""
+XRAY_INBOUND_B64=""
+USE_EXISTING_XRAY_CONFIG=0
+USE_EXISTING_XRAY_SERVICE=0
+BACKUP_STAMP=""
 
 if [[ -t 1 ]]; then
   BOLD=$'\033[1m'
@@ -78,6 +108,9 @@ Useful automation flags:
   NONINTERACTIVE=1         use env/default values without prompts
   ASSUME_YES=1             accept confirmation prompts
   FORCE=1                  overwrite existing managed files
+  XRAY_CONFIG_MODE=auto     auto | preserve | replace
+  UPDATE_XRAY=1             update Xray binary/assets from the latest release
+  RESTART_XRAY=1            restart Xray after updating its binary/assets
 
 Common inputs:
   SERVER_PUBLIC_ADDR=203.0.113.10
@@ -104,6 +137,12 @@ done
 
 is_dry_run() { [[ "$DRY_RUN" == "1" ]]; }
 is_interactive() { [[ "$NONINTERACTIVE" != "1" && -t 0 ]]; }
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|y) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 require_linux() {
   [[ "$(uname -s)" == "Linux" ]] || die "this installer supports Linux only"
@@ -135,6 +174,38 @@ target_path() {
   fi
 }
 
+read_path() {
+  local path=$1
+  if is_dry_run && [[ "$path" == /* ]]; then
+    target_path "$path"
+  else
+    printf '%s' "$path"
+  fi
+}
+
+backup_stamp() {
+  if [[ -z "$BACKUP_STAMP" ]]; then
+    BACKUP_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+  fi
+  printf '%s' "$BACKUP_STAMP"
+}
+
+backup_existing_path() {
+  local path=$1
+  local source
+  source=$(read_path "$path")
+  if [[ ! -e "$source" ]]; then
+    return 0
+  fi
+  local dest="$BACKUP_DIR/$(backup_stamp)/${path#/}"
+  if is_dry_run; then
+    printf 'DRY RUN: backup %q -> %q\n' "$path" "$dest"
+    return 0
+  fi
+  install -d -m 0700 "$(dirname "$dest")"
+  cp -a "$source" "$dest"
+}
+
 print_command() {
   local quoted=()
   local arg
@@ -163,6 +234,7 @@ write_file() {
   if is_dry_run; then
     info "render $path -> $target mode=$mode"
   fi
+  backup_existing_path "$path"
   mkdir -p "$(dirname "$target")"
   local tmp
   tmp=$(mktemp)
@@ -261,7 +333,7 @@ value_or_empty() {
 }
 
 bool_label() {
-  if [[ "$1" == "1" ]]; then
+  if is_truthy "$1"; then
     printf 'yes'
   else
     printf 'no'
@@ -294,12 +366,239 @@ load_default_inputs() {
   VK_LINK=$DEFAULT_VK_LINK
 }
 
+find_existing_xray_service() {
+  local service_path
+  local unit_path
+  for unit_path in "/etc/systemd/system/$XRAY_SERVICE_NAME" "/lib/systemd/system/$XRAY_SERVICE_NAME" "/usr/lib/systemd/system/$XRAY_SERVICE_NAME"; do
+    service_path=$(read_path "$unit_path")
+    if [[ -f "$service_path" ]]; then
+      EXISTING_XRAY_SERVICE=1
+      EXISTING_XRAY_UNIT=$unit_path
+      USE_EXISTING_XRAY_SERVICE=1
+      return
+    fi
+  done
+  if ! is_dry_run && command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "$XRAY_SERVICE_NAME" --no-legend 2>/dev/null | grep -q '^'; then
+    EXISTING_XRAY_SERVICE=1
+    USE_EXISTING_XRAY_SERVICE=1
+    unit_path=$(systemctl show -p FragmentPath --value "$XRAY_SERVICE_NAME" 2>/dev/null || true)
+    if [[ -n "$unit_path" && "$unit_path" != "/dev/null" && -f "$unit_path" ]]; then
+      EXISTING_XRAY_UNIT=$unit_path
+    fi
+  fi
+}
+
+normalize_existing_xray_binary() {
+  local candidate=$EXISTING_XRAY_BINARY
+  local basename
+  [[ -n "$candidate" ]] || return 0
+  basename=${candidate##*/}
+  if [[ "$basename" != "xray" ]]; then
+    EXISTING_XRAY_BINARY=""
+    return 0
+  fi
+  if [[ "$candidate" != /* ]]; then
+    if ! is_dry_run && command -v "$candidate" >/dev/null 2>&1; then
+      EXISTING_XRAY_BINARY=$(command -v "$candidate")
+    else
+      EXISTING_XRAY_BINARY=""
+    fi
+  fi
+}
+
+extract_xray_service_config() {
+  local unit_path=$1
+  local unit_source
+  unit_source=$(read_path "$unit_path")
+  [[ -f "$unit_source" ]] || return 0
+  EXISTING_XRAY_CONFIG_FROM_SERVICE=$(sed -nE 's/.*(^|[[:space:]])(-config|-c|--config=)[[:space:]]*([^[:space:]]+).*/\3/p; s/.*--config=([^[:space:]]+).*/\1/p' "$unit_source" | head -n1 | tr -d "'\"")
+  EXISTING_XRAY_BINARY=$(sed -nE 's/^[[:space:]]*ExecStart=([^[:space:]]+).*/\1/p' "$unit_source" | head -n1 | tr -d "'\"")
+  normalize_existing_xray_binary
+}
+
+candidate_xray_configs() {
+  if [[ -n "$XRAY_EXISTING_CONFIG" ]]; then
+    printf '%s\n' "$XRAY_EXISTING_CONFIG"
+  fi
+  if [[ -n "$EXISTING_XRAY_CONFIG_FROM_SERVICE" ]]; then
+    printf '%s\n' "$EXISTING_XRAY_CONFIG_FROM_SERVICE"
+  fi
+  printf '%s\n' "$XRAY_CONFIG" "/etc/xray/config.json" "/usr/local/etc/xray/config.json" "/etc/v2ray/config.json"
+}
+
+python_json_available() {
+  command -v python3 >/dev/null 2>&1
+}
+
+extract_vless_from_config() {
+  local config_path=$1
+  local source
+  source=$(read_path "$config_path")
+  [[ -f "$source" ]] || return 1
+  python_json_available || return 1
+  python3 - "$source" <<'PY'
+import base64
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    cfg = json.load(fh)
+
+
+def b64_json(value):
+    data = json.dumps(value or {}, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.b64encode(data).decode("ascii")
+
+for inbound in cfg.get("inbounds", []):
+    if str(inbound.get("protocol", "")).lower() != "vless":
+        continue
+    stream = inbound.get("streamSettings") or {}
+    network = str(stream.get("network") or "tcp").lower()
+    if network != "tcp":
+        continue
+    clients = (inbound.get("settings") or {}).get("clients") or []
+    if not clients:
+        continue
+    first = clients[0] or {}
+    uuid = str(first.get("id") or "")
+    if not uuid:
+        continue
+    settings = inbound.get("settings") or {}
+    print("tag=" + str(inbound.get("tag") or "vless-in"))
+    print("listen=" + str(inbound.get("listen") or "127.0.0.1"))
+    print("port=" + str(inbound.get("port") or ""))
+    print("uuid=" + uuid)
+    print("network=" + network)
+    print("security=" + str(stream.get("security") or "none").lower())
+    print("encryption=" + str(settings.get("decryption") or "none").lower())
+    print("inbound_b64=" + b64_json(inbound))
+    print("stream_b64=" + b64_json(stream))
+    print("client_b64=" + b64_json(first))
+    sys.exit(0)
+
+sys.exit(1)
+PY
+}
+
+apply_imported_vless_settings() {
+  local key value
+  while IFS='=' read -r key value; do
+    case "$key" in
+      tag) EXISTING_VLESS_TAG=$value ;;
+      listen)
+        EXISTING_XRAY_LISTEN=$value
+        if [[ -z "$XRAY_LISTEN_INPUT" ]]; then
+          XRAY_LISTEN=$value
+        fi
+        ;;
+      port)
+        EXISTING_XRAY_PORT=$value
+        if [[ -z "$XRAY_PORT_INPUT" ]]; then
+          XRAY_PORT=$value
+        fi
+        ;;
+      uuid)
+        EXISTING_VLESS_UUID=$value
+        if [[ -z "$VLESS_UUID_INPUT" ]]; then
+          VLESS_UUID=$value
+        fi
+        ;;
+      network) VLESS_NETWORK=$value ;;
+      security) VLESS_SECURITY=$value ;;
+      encryption) VLESS_ENCRYPTION=$value ;;
+      inbound_b64) XRAY_INBOUND_B64=$value ;;
+      stream_b64) XRAY_STREAM_SETTINGS_B64=$value ;;
+      client_b64) XRAY_CLIENT_B64=$value ;;
+    esac
+  done <<<"$1"
+}
+
+validate_imported_overrides() {
+  if [[ "$EXISTING_XRAY_IMPORTED" != "1" ]]; then
+    return 0
+  fi
+  if [[ -n "$XRAY_LISTEN_INPUT" && "$XRAY_LISTEN" != "$EXISTING_XRAY_LISTEN" ]]; then
+    die "XRAY_LISTEN=$XRAY_LISTEN conflicts with preserved Xray inbound listen $EXISTING_XRAY_LISTEN; unset XRAY_LISTEN or use XRAY_CONFIG_MODE=replace"
+  fi
+  if [[ -n "$XRAY_PORT_INPUT" && "$XRAY_PORT" != "$EXISTING_XRAY_PORT" ]]; then
+    die "XRAY_PORT=$XRAY_PORT conflicts with preserved Xray inbound port $EXISTING_XRAY_PORT; unset XRAY_PORT or use XRAY_CONFIG_MODE=replace"
+  fi
+  if [[ -n "$VLESS_UUID_INPUT" && "$VLESS_UUID" != "$EXISTING_VLESS_UUID" ]]; then
+    die "VLESS_UUID conflicts with preserved Xray client id; unset VLESS_UUID or use XRAY_CONFIG_MODE=replace"
+  fi
+}
+
+discover_existing_xray() {
+  section "Existing Xray/VLESS discovery"
+  case "$XRAY_CONFIG_MODE" in
+    auto|preserve|replace) ;;
+    *) die "XRAY_CONFIG_MODE must be auto, preserve, or replace" ;;
+  esac
+
+  find_existing_xray_service
+  if [[ -n "$EXISTING_XRAY_UNIT" ]]; then
+    extract_xray_service_config "$EXISTING_XRAY_UNIT"
+  fi
+  if [[ -n "$EXISTING_XRAY_BINARY" && -z "$XRAY_BINARY_INPUT" ]]; then
+    XRAY_BINARY=$EXISTING_XRAY_BINARY
+  elif ! is_dry_run && command -v xray >/dev/null 2>&1 && [[ -z "$XRAY_BINARY_INPUT" ]]; then
+    XRAY_BINARY=$(command -v xray)
+    EXISTING_XRAY_BINARY=$XRAY_BINARY
+  fi
+
+  if [[ "$XRAY_CONFIG_MODE" == "replace" ]]; then
+    USE_EXISTING_XRAY_CONFIG=0
+    USE_EXISTING_XRAY_SERVICE=0
+    warn "XRAY_CONFIG_MODE=replace selected; existing Xray config/unit may be overwritten after confirmation"
+    return
+  fi
+
+  local config_path imported
+  if ! python_json_available; then
+    warn "python3 is unavailable; existing Xray JSON configs cannot be parsed before install"
+  fi
+  while IFS= read -r config_path; do
+    [[ -n "$config_path" ]] || continue
+    if [[ -f "$(read_path "$config_path")" ]]; then
+      EXISTING_XRAY_CONFIG_FOUND=1
+    fi
+    imported=$(extract_vless_from_config "$config_path" 2>/dev/null || true)
+    if [[ -n "$imported" ]]; then
+      EXISTING_XRAY_IMPORTED=1
+      EXISTING_XRAY_CONFIG=$config_path
+      XRAY_CONFIG=$config_path
+      USE_EXISTING_XRAY_CONFIG=1
+      apply_imported_vless_settings "$imported"
+      validate_imported_overrides
+      ok "imported existing VLESS inbound from $config_path"
+      break
+    fi
+  done < <(candidate_xray_configs | awk 'NF && !seen[$0]++')
+
+  if [[ "$XRAY_CONFIG_MODE" == "preserve" && "$EXISTING_XRAY_IMPORTED" != "1" ]]; then
+    die "XRAY_CONFIG_MODE=preserve requires an existing VLESS TCP inbound"
+  fi
+  if [[ "$EXISTING_XRAY_IMPORTED" != "1" && ( "$EXISTING_XRAY_SERVICE" == "1" || "$EXISTING_XRAY_CONFIG_FOUND" == "1" ) ]]; then
+    die "existing Xray was detected, but no VLESS TCP inbound was imported; use XRAY_CONFIG_MODE=preserve with a valid config or XRAY_CONFIG_MODE=replace to overwrite explicitly"
+  fi
+  if [[ "$EXISTING_XRAY_IMPORTED" != "1" ]]; then
+    info "no existing VLESS TCP inbound imported; a managed Xray config will be rendered"
+  fi
+}
+
 print_tui_config() {
   tui_clear
   printf '%sVK TURN VLESS Linux installer%s\n' "$BOLD" "$RESET"
   printf '%sClean Debian/Ubuntu VPS bootstrap. Values marked generated are created by this script.%s\n\n' "$DIM" "$RESET"
   printf '%sMode%s\n' "$BOLD" "$RESET"
   printf '  install mode:          %s\n' "$(is_dry_run && echo dry-run || echo real install)"
+  printf '  Xray config mode:      %s\n' "$XRAY_CONFIG_MODE"
+  printf '  existing Xray import:  %s\n' "$(bool_label "$EXISTING_XRAY_IMPORTED")"
+  if [[ "$EXISTING_XRAY_IMPORTED" == "1" ]]; then
+    printf '  existing Xray config:  %s\n' "$EXISTING_XRAY_CONFIG"
+    printf '  existing VLESS tag:    %s\n' "$EXISTING_VLESS_TAG"
+  fi
   printf '  repo root:             %s\n\n' "$ROOT_DIR"
   printf '%sGenerated credentials%s\n' "$BOLD" "$RESET"
   printf '  r) VLESS UUID:         %s\n\n' "$VLESS_UUID"
@@ -315,7 +614,9 @@ print_tui_config() {
   printf '  8) VK call link:       %s\n\n' "$(value_or_empty "$VK_LINK")"
   printf '%sInstall actions%s\n' "$BOLD" "$RESET"
   printf '  9) host firewall:      %s\n' "$(bool_label "$CONFIGURE_FIREWALL")"
-  printf ' 10) start services:     %s\n\n' "$(bool_label "$START_SERVICES")"
+  printf ' 10) start services:     %s\n' "$(bool_label "$START_SERVICES")"
+  printf '     update Xray:        %s\n' "$(bool_label "$UPDATE_XRAY")"
+  printf '     restart Xray:       %s\n\n' "$(bool_label "$RESTART_XRAY")"
   printf 'Select 1-10 to edit, r to regenerate UUID, s to start, q to quit.\n'
 }
 
@@ -335,7 +636,7 @@ edit_tui_field() {
       CONFIGURE_FIREWALL=$configure_fw
       ;;
     10)
-      ask_yes_no start_svcs "Enable and start xray.service and vkturn-server.service" "$(yes_no_default "$START_SERVICES")"
+      ask_yes_no start_svcs "Start $XRAY_SERVICE_NAME and enable/start vkturn-server.service" "$(yes_no_default "$START_SERVICES")"
       START_SERVICES=$start_svcs
       ;;
     *) warn "unknown menu item: $1"; tui_pause ;;
@@ -346,7 +647,15 @@ ensure_xray_listen_is_safe() {
   if [[ "$XRAY_LISTEN" == 127.* || "$XRAY_LISTEN" == "localhost" || "$XRAY_LISTEN" == "::1" ]]; then
     return 0
   fi
-  warn "Xray security=none should stay loopback-only for this test path"
+  if [[ "$VLESS_SECURITY" != "none" ]]; then
+    warn "Xray listen address is non-loopback; imported VLESS security is $VLESS_SECURITY"
+    return 0
+  fi
+  if [[ "$USE_EXISTING_XRAY_CONFIG" == "1" ]]; then
+    warn "preserving existing Xray security=none on non-loopback $XRAY_LISTEN; installer will not widen exposure"
+    return 0
+  fi
+  warn "Xray security=none should stay loopback-only for a managed test inbound"
   if ! is_interactive; then
     [[ "${ALLOW_PUBLIC_XRAY:-0}" == "1" ]] || { warn "set ALLOW_PUBLIC_XRAY=1 to allow non-loopback Xray listen address in non-interactive mode"; return 1; }
     return 0
@@ -411,6 +720,13 @@ validate_inputs() {
   fi
   valid_host "$SERVER_PUBLIC_ADDR" || { warn "invalid server public address: $SERVER_PUBLIC_ADDR"; return 1; }
   valid_uuid "$VLESS_UUID" || { warn "invalid generated VLESS UUID: $VLESS_UUID"; return 1; }
+  [[ "$XRAY_SERVICE_NAME" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || { warn "invalid Xray systemd service name: $XRAY_SERVICE_NAME"; return 1; }
+  [[ "$VLESS_NETWORK" == "tcp" ]] || { warn "only VLESS network=tcp is supported by vk-turn-proxy sidecar; got $VLESS_NETWORK"; return 1; }
+  if [[ "$USE_EXISTING_XRAY_CONFIG" == "1" ]]; then
+    [[ "$XRAY_LISTEN" == "$EXISTING_XRAY_LISTEN" ]] || { warn "preserved Xray listen cannot be changed from $EXISTING_XRAY_LISTEN to $XRAY_LISTEN"; return 1; }
+    [[ "$XRAY_PORT" == "$EXISTING_XRAY_PORT" ]] || { warn "preserved Xray port cannot be changed from $EXISTING_XRAY_PORT to $XRAY_PORT"; return 1; }
+    [[ "$VLESS_UUID" == "$EXISTING_VLESS_UUID" ]] || { warn "preserved Xray UUID cannot be changed from imported client id"; return 1; }
+  fi
   [[ "$VKTURN_STATUS_PORT" != "$XRAY_PORT" ]] || { warn "status API port and Xray port must differ"; return 1; }
   if [[ "$SERVICE_USER" != "root" ]]; then
     ((10#$VKTURN_UDP_PORT >= 1024)) || { warn "VK TURN UDP port $VKTURN_UDP_PORT requires root; choose >=1024 or set SERVICE_USER=root"; return 1; }
@@ -536,9 +852,15 @@ ensure_can_overwrite() {
 
 preflight_existing_paths() {
   local path
-  for path in "$SERVER_BINARY" "$VKTURN_CONFIG" "$VKTURN_PROFILE" "$VKTURN_UNIT" "$XRAY_CONFIG" "$XRAY_UNIT" "$SUMMARY_PATH"; do
+  for path in "$SERVER_BINARY" "$VKTURN_CONFIG" "$VKTURN_PROFILE" "$VKTURN_UNIT" "$SUMMARY_PATH"; do
     ensure_can_overwrite "$path"
   done
+  if [[ "$USE_EXISTING_XRAY_CONFIG" != "1" ]]; then
+    ensure_can_overwrite "$XRAY_CONFIG"
+  fi
+  if [[ "$USE_EXISTING_XRAY_SERVICE" != "1" ]]; then
+    ensure_can_overwrite "$XRAY_UNIT"
+  fi
 }
 
 install_packages() {
@@ -550,7 +872,7 @@ install_packages() {
     fi
   fi
   run apt-get update
-  run env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl unzip tar gzip openssl iproute2 lsof
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl unzip tar gzip openssl iproute2 lsof python3
 }
 
 install_go_if_needed() {
@@ -597,11 +919,19 @@ install_go_if_needed() {
 
 install_xray_binary() {
   section "Xray core"
-  if command -v xray >/dev/null 2>&1 && [[ "$FORCE" != "1" ]]; then
-    XRAY_BINARY=$(command -v xray)
-    XRAY_MANAGED_ASSETS=0
-    ok "Xray binary is available: $XRAY_BINARY"
-    return
+  if ! is_truthy "$UPDATE_XRAY"; then
+    if [[ -x "$(read_path "$XRAY_BINARY")" ]]; then
+      XRAY_MANAGED_ASSETS=0
+      ok "Xray update disabled; preserving existing binary: $XRAY_BINARY"
+      return
+    fi
+    if ! is_dry_run && command -v xray >/dev/null 2>&1 && [[ -z "$XRAY_BINARY_INPUT" ]]; then
+      XRAY_BINARY=$(command -v xray)
+      XRAY_MANAGED_ASSETS=0
+      ok "Xray update disabled; preserving existing binary: $XRAY_BINARY"
+      return
+    fi
+    warn "UPDATE_XRAY=0 but no Xray binary was found at $XRAY_BINARY; installing latest release"
   fi
 
   local arch asset tmp expected
@@ -631,6 +961,9 @@ install_xray_binary() {
   printf '%s  %s\n' "$expected" "$tmp/$asset" | sha256sum -c -
   unzip -q "$tmp/$asset" -d "$tmp/xray"
   install -d -m 0755 "$(dirname "$XRAY_BINARY")" "$XRAY_ASSET_DIR"
+  backup_existing_path "$XRAY_BINARY"
+  backup_existing_path "$XRAY_ASSET_DIR/geoip.dat"
+  backup_existing_path "$XRAY_ASSET_DIR/geosite.dat"
   install -m 0755 "$tmp/xray/xray" "$XRAY_BINARY"
   install -m 0644 "$tmp/xray/geoip.dat" "$XRAY_ASSET_DIR/geoip.dat"
   install -m 0644 "$tmp/xray/geosite.dat" "$XRAY_ASSET_DIR/geosite.dat"
@@ -647,7 +980,7 @@ xray_asset_environment() {
 
 xray_backend_host() {
   case "$XRAY_LISTEN" in
-    0.0.0.0|::) printf '127.0.0.1' ;;
+    0.0.0.0|::|\[::\]) printf '127.0.0.1' ;;
     *) printf '%s' "$XRAY_LISTEN" ;;
   esac
 }
@@ -744,8 +1077,8 @@ render_vkturn_unit() {
   cat <<EOF
 [Unit]
 Description=VK TURN VLESS Sidecar
-After=network-online.target xray.service
-Wants=network-online.target xray.service
+After=network-online.target $XRAY_SERVICE_NAME
+Wants=network-online.target $XRAY_SERVICE_NAME
 
 [Service]
 Type=simple
@@ -772,14 +1105,39 @@ WantedBy=multi-user.target
 EOF
 }
 
-render_profile() {
-  local peer uri vk_link_display local_command
+local_vless_uri() {
+  printf 'vless://%s@%s:%s?encryption=%s&security=%s&type=%s#vkturn-local-sidecar' \
+    "$VLESS_UUID" "$LOCAL_VLESS_LISTEN" "$LOCAL_VLESS_PORT" "$VLESS_ENCRYPTION" "$VLESS_SECURITY" "$VLESS_NETWORK"
+}
+
+local_client_command() {
+  local peer vk_link_display
   peer="$SERVER_PUBLIC_ADDR:$VKTURN_UDP_PORT"
-  uri="vless://$VLESS_UUID@$LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT?encryption=none&security=none&type=tcp#vkturn-local-sidecar"
   vk_link_display=${VK_LINK:-<VK_LINK>}
-  local_command="./dev/bin/vk-turn-proxy-client -peer $(printf '%q' "$peer") -vk-link $(printf '%q' "$vk_link_display") -listen $(printf '%q' "$LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT") -vless"
+  printf './dev/bin/vk-turn-proxy-client -peer %s -vk-link %s -listen %s -vless' \
+    "$(printf '%q' "$peer")" "$(printf '%q' "$vk_link_display")" "$(printf '%q' "$LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT")"
+}
+
+render_profile() {
+  local peer uri local_command
+  peer="$SERVER_PUBLIC_ADDR:$VKTURN_UDP_PORT"
+  uri=$(local_vless_uri)
+  local_command=$(local_client_command)
   cat <<EOF
+XRAY_CONFIG_MODE=$(printf '%q' "$XRAY_CONFIG_MODE")
+XRAY_SERVICE_NAME=$(printf '%q' "$XRAY_SERVICE_NAME")
+XRAY_BINARY=$(printf '%q' "$XRAY_BINARY")
+XRAY_CONFIG=$(printf '%q' "$XRAY_CONFIG")
+EXISTING_XRAY_IMPORTED=$(printf '%q' "$EXISTING_XRAY_IMPORTED")
+EXISTING_XRAY_CONFIG=$(printf '%q' "$EXISTING_XRAY_CONFIG")
+EXISTING_VLESS_TAG=$(printf '%q' "$EXISTING_VLESS_TAG")
 VLESS_UUID=$(printf '%q' "$VLESS_UUID")
+VLESS_ENCRYPTION=$(printf '%q' "$VLESS_ENCRYPTION")
+VLESS_NETWORK=$(printf '%q' "$VLESS_NETWORK")
+VLESS_SECURITY=$(printf '%q' "$VLESS_SECURITY")
+XRAY_INBOUND_B64=$(printf '%q' "$XRAY_INBOUND_B64")
+XRAY_STREAM_SETTINGS_B64=$(printf '%q' "$XRAY_STREAM_SETTINGS_B64")
+XRAY_CLIENT_B64=$(printf '%q' "$XRAY_CLIENT_B64")
 VKTURN_PEER=$(printf '%q' "$peer")
 VKTURN_UDP_PORT=$(printf '%q' "$VKTURN_UDP_PORT")
 XRAY_BACKEND=$(printf '%q' "$(xray_backend_host):$XRAY_PORT")
@@ -791,30 +1149,42 @@ EOF
 }
 
 render_codex_handoff() {
-  local peer uri vk_link_display local_command
+  local peer uri local_command
   peer="$SERVER_PUBLIC_ADDR:$VKTURN_UDP_PORT"
-  uri="vless://$VLESS_UUID@$LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT?encryption=none&security=none&type=tcp#vkturn-local-sidecar"
-  vk_link_display=${VK_LINK:-<VK_LINK>}
-  local_command="./dev/bin/vk-turn-proxy-client -peer $(printf '%q' "$peer") -vk-link $(printf '%q' "$vk_link_display") -listen $(printf '%q' "$LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT") -vless"
+  uri=$(local_vless_uri)
+  local_command=$(local_client_command)
   cat <<EOF
 ----- CODEX HANDOFF BEGIN -----
 SERVER_PUBLIC_ADDR=$(printf '%q' "$SERVER_PUBLIC_ADDR")
 VKTURN_PEER=$(printf '%q' "$peer")
 VKTURN_UDP_PORT=$(printf '%q' "$VKTURN_UDP_PORT")
+XRAY_CONFIG_MODE=$(printf '%q' "$XRAY_CONFIG_MODE")
+XRAY_SERVICE_NAME=$(printf '%q' "$XRAY_SERVICE_NAME")
+XRAY_BINARY=$(printf '%q' "$XRAY_BINARY")
+XRAY_CONFIG=$(printf '%q' "$XRAY_CONFIG")
+EXISTING_XRAY_IMPORTED=$(printf '%q' "$EXISTING_XRAY_IMPORTED")
+EXISTING_XRAY_CONFIG=$(printf '%q' "$EXISTING_XRAY_CONFIG")
+EXISTING_VLESS_TAG=$(printf '%q' "$EXISTING_VLESS_TAG")
 VLESS_UUID=$(printf '%q' "$VLESS_UUID")
+VLESS_ENCRYPTION=$(printf '%q' "$VLESS_ENCRYPTION")
+VLESS_NETWORK=$(printf '%q' "$VLESS_NETWORK")
+VLESS_SECURITY=$(printf '%q' "$VLESS_SECURITY")
+XRAY_INBOUND_B64=$(printf '%q' "$XRAY_INBOUND_B64")
+XRAY_STREAM_SETTINGS_B64=$(printf '%q' "$XRAY_STREAM_SETTINGS_B64")
+XRAY_CLIENT_B64=$(printf '%q' "$XRAY_CLIENT_B64")
 LOCAL_VLESS_ENDPOINT=$(printf '%q' "$LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT")
 LOCAL_VLESS_URI=$(printf '%q' "$uri")
 LOCAL_CLIENT_COMMAND=$(printf '%q' "$local_command")
 V2RAYA_ADDRESS=$(printf '%q' "$LOCAL_VLESS_LISTEN")
 V2RAYA_PORT=$(printf '%q' "$LOCAL_VLESS_PORT")
 V2RAYA_UUID=$(printf '%q' "$VLESS_UUID")
-V2RAYA_NETWORK=tcp
-V2RAYA_SECURITY=none
-V2RAYA_ENCRYPTION=none
+V2RAYA_NETWORK=$(printf '%q' "$VLESS_NETWORK")
+V2RAYA_SECURITY=$(printf '%q' "$VLESS_SECURITY")
+V2RAYA_ENCRYPTION=$(printf '%q' "$VLESS_ENCRYPTION")
 SERVER_HEALTH_URL=$(printf '%q' "http://127.0.0.1:$VKTURN_STATUS_PORT/health")
 SERVER_HEALTH_COMMAND=$(printf '%q' "curl -fsS http://127.0.0.1:$VKTURN_STATUS_PORT/health")
-SERVER_STATUS_COMMAND=$(printf '%q' "systemctl --no-pager status xray.service vkturn-server.service")
-SERVER_LOG_COMMAND=$(printf '%q' "journalctl -u xray -u vkturn-server --no-pager -n 120")
+SERVER_STATUS_COMMAND=$(printf '%q' "systemctl --no-pager status $XRAY_SERVICE_NAME vkturn-server.service")
+SERVER_LOG_COMMAND=$(printf '%q' "journalctl -u $XRAY_SERVICE_NAME -u vkturn-server.service --no-pager -n 120")
 SERVER_UDP_LISTEN_COMMAND=$(printf '%q' "ss -lunp | grep ':$VKTURN_UDP_PORT'")
 SERVER_SUMMARY_PATH=$(printf '%q' "$SUMMARY_PATH")
 ----- CODEX HANDOFF END -----
@@ -822,11 +1192,10 @@ EOF
 }
 
 render_summary() {
-  local peer uri vk_link_display local_command
+  local peer uri local_command
   peer="$SERVER_PUBLIC_ADDR:$VKTURN_UDP_PORT"
-  uri="vless://$VLESS_UUID@$LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT?encryption=none&security=none&type=tcp#vkturn-local-sidecar"
-  vk_link_display=${VK_LINK:-<VK_LINK>}
-  local_command="./dev/bin/vk-turn-proxy-client -peer $(printf '%q' "$peer") -vk-link $(printf '%q' "$vk_link_display") -listen $(printf '%q' "$LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT") -vless"
+  uri=$(local_vless_uri)
+  local_command=$(local_client_command)
   cat <<EOF
 VK TURN VLESS server install result
 Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -834,15 +1203,23 @@ Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 Server side:
   UDP peer: $peer
   vkturn config: $VKTURN_CONFIG
+  Xray service: $XRAY_SERVICE_NAME
+  Xray binary: $XRAY_BINARY
   xray config: $XRAY_CONFIG
+  existing Xray imported: $EXISTING_XRAY_IMPORTED
+  existing VLESS tag: ${EXISTING_VLESS_TAG:-<none>}
+  backup dir: $BACKUP_DIR/$(backup_stamp)
   status API: http://127.0.0.1:$VKTURN_STATUS_PORT/health
-  logs: journalctl -u vkturn-server -u xray --no-pager -n 100
+  logs: journalctl -u vkturn-server.service -u $XRAY_SERVICE_NAME --no-pager -n 100
 
-Generated VLESS credentials:
+VLESS credentials for local v2RayA outbound:
   UUID: $VLESS_UUID
-  encryption: none
-  network: tcp
-  security: none
+  encryption: $VLESS_ENCRYPTION
+  network: $VLESS_NETWORK
+  security: $VLESS_SECURITY
+  selected inbound base64 JSON: ${XRAY_INBOUND_B64:-<managed-by-installer>}
+  streamSettings base64 JSON: ${XRAY_STREAM_SETTINGS_B64:-<managed-by-installer>}
+  client base64 JSON: ${XRAY_CLIENT_B64:-<managed-by-installer>}
 
 Local client sidecar on your Linux workstation:
   go build -o ./dev/bin/vk-turn-proxy-client ./client
@@ -852,13 +1229,14 @@ v2RayA local node:
   address: $LOCAL_VLESS_LISTEN
   port: $LOCAL_VLESS_PORT
   UUID: $VLESS_UUID
-  encryption: none
-  network: tcp
-  security: none
+  encryption: $VLESS_ENCRYPTION
+  network: $VLESS_NETWORK
+  security: $VLESS_SECURITY
   import URI: $uri
 
 Notes:
   The VPS Xray inbound listens on $XRAY_LISTEN:$XRAY_PORT and is intended for local sidecar traffic only.
+  If security is not none, use the base64 streamSettings/client data above to mirror exact TLS/REALITY settings in v2RayA.
   Open the UDP peer port $VKTURN_UDP_PORT/udp in the provider firewall/security group if the VPS provider has one.
 
 Copy this block back to Codex for local client testing:
@@ -869,23 +1247,33 @@ EOF
 
 write_configs() {
   section "Render configs and units"
-  ensure_dir "$(dirname "$XRAY_CONFIG")" 0750
-  ensure_dir "$XRAY_LOG_DIR" 0750
+  if [[ "$USE_EXISTING_XRAY_CONFIG" == "1" ]]; then
+    info "preserve existing Xray config: $XRAY_CONFIG"
+  else
+    ensure_dir "$(dirname "$XRAY_CONFIG")" 0750
+    ensure_dir "$XRAY_LOG_DIR" 0750
+    write_file "$XRAY_CONFIG" 0640 "$(render_xray_config)"$'\n'
+  fi
   ensure_dir "$(dirname "$VKTURN_CONFIG")" 0750
   ensure_dir "$INSTALL_DIR" 0755
   ensure_dir "$VKTURN_LOG_DIR" 0750
 
-  write_file "$XRAY_CONFIG" 0640 "$(render_xray_config)"$'\n'
-  write_file "$XRAY_UNIT" 0644 "$(render_xray_unit)"$'\n'
+  if [[ "$USE_EXISTING_XRAY_SERVICE" == "1" ]]; then
+    info "preserve existing Xray systemd unit: $XRAY_SERVICE_NAME"
+  else
+    write_file "$XRAY_UNIT" 0644 "$(render_xray_unit)"$'\n'
+  fi
   write_file "$VKTURN_CONFIG" 0640 "$(render_vkturn_config)"$'\n'
   write_file "$VKTURN_UNIT" 0644 "$(render_vkturn_unit)"$'\n'
   write_file "$VKTURN_PROFILE" 0600 "$(render_profile)"
 
-  chown_one "root:$SERVICE_GROUP" "$(dirname "$XRAY_CONFIG")"
-  chown_one "root:$SERVICE_GROUP" "$XRAY_CONFIG"
+  if [[ "$USE_EXISTING_XRAY_CONFIG" != "1" ]]; then
+    chown_one "root:$SERVICE_GROUP" "$(dirname "$XRAY_CONFIG")"
+    chown_one "root:$SERVICE_GROUP" "$XRAY_CONFIG"
+    chown_path "$SERVICE_USER:$SERVICE_GROUP" "$XRAY_LOG_DIR"
+  fi
   chown_one "root:$SERVICE_GROUP" "$(dirname "$VKTURN_CONFIG")"
   chown_one "root:$SERVICE_GROUP" "$VKTURN_CONFIG"
-  chown_path "$SERVICE_USER:$SERVICE_GROUP" "$XRAY_LOG_DIR"
   chown_path "$SERVICE_USER:$SERVICE_GROUP" "$VKTURN_LOG_DIR"
 }
 
@@ -944,8 +1332,18 @@ start_and_verify_services() {
     return
   fi
   run systemctl daemon-reload
-  run systemctl enable --now xray.service
-  service_health_or_fail xray.service
+  if [[ "$USE_EXISTING_XRAY_SERVICE" == "1" ]]; then
+    if is_truthy "$RESTART_XRAY"; then
+      run systemctl restart "$XRAY_SERVICE_NAME"
+      service_health_or_fail "$XRAY_SERVICE_NAME"
+    else
+      warn "Xray restart skipped by operator; updated binary will apply after the next $XRAY_SERVICE_NAME restart"
+      service_health_or_fail "$XRAY_SERVICE_NAME"
+    fi
+  else
+    run systemctl enable --now "$XRAY_SERVICE_NAME"
+    service_health_or_fail "$XRAY_SERVICE_NAME"
+  fi
 
   local backend_host
   backend_host=$(xray_backend_host)
@@ -974,7 +1372,6 @@ write_summary() {
 
 collect_inputs() {
   section "Interactive setup"
-  load_default_inputs
   if is_interactive; then
     run_interactive_menu
   else
@@ -992,9 +1389,13 @@ Public peer:        $SERVER_PUBLIC_ADDR:$VKTURN_UDP_PORT/udp
 Xray inbound:       $XRAY_LISTEN:$XRAY_PORT/tcp
 VLESS UUID:         $VLESS_UUID
 Status API:         http://127.0.0.1:$VKTURN_STATUS_PORT/health
-Local v2RayA node:  $LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT tcp security=none
+Local v2RayA node:  $LOCAL_VLESS_LISTEN:$LOCAL_VLESS_PORT $VLESS_NETWORK security=$VLESS_SECURITY
 Server binary:      $SERVER_BINARY
-Managed configs:    $XRAY_CONFIG, $VKTURN_CONFIG
+Xray mode:          $XRAY_CONFIG_MODE imported=$EXISTING_XRAY_IMPORTED update=$(bool_label "$UPDATE_XRAY") restart=$(bool_label "$RESTART_XRAY")
+Xray service:       $XRAY_SERVICE_NAME
+Xray binary:        $XRAY_BINARY
+Xray config:        $XRAY_CONFIG ($( [[ "$USE_EXISTING_XRAY_CONFIG" == "1" ]] && echo preserved || echo managed ))
+Managed configs:    $VKTURN_CONFIG, $VKTURN_PROFILE, $VKTURN_UNIT
 EOF
   local yes=0
   ask_yes_no yes "Proceed with this installation" "y"
@@ -1008,6 +1409,8 @@ main() {
   require_root_for_real_install
   init_dry_run_root
   resolve_service_identity
+  load_default_inputs
+  discover_existing_xray
   collect_inputs
   confirm_plan
   preflight_existing_paths

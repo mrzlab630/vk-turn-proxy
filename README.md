@@ -613,7 +613,7 @@ curl -L -o client https://github.com/cacggghp/vk-turn-proxy/releases/latest/down
 3. На клиенте запустить `client` с флагом `-vless`
 4. Настроить Xray/v2rayN клиент с VLESS outbound на `127.0.0.1:9000`
 
-### Быстрая установка на чистый Linux VPS
+### Быстрая установка на Linux VPS
 
 Для первого теста на Debian/Ubuntu можно запустить интерактивный установщик из
 корня склонированного проекта:
@@ -622,19 +622,65 @@ curl -L -o client https://github.com/cacggghp/vk-turn-proxy/releases/latest/down
 sudo bash dev/scripts/install-linux-vless-server.sh
 ```
 
-Скрипт сам генерирует VLESS UUID, ставит недостающий Go toolchain и Xray из
-проверяемых архивов, собирает `vk-turn-proxy-server`, создает systemd units,
-стартует `xray.service` и `vkturn-server.service`, открывает UDP-порт в активном
-`ufw`/`firewalld` если они включены, и печатает данные для локального клиента.
-Итоговая памятка сохраняется на сервере в `/root/vkturn-install-result.txt`.
-Для совместного тестирования локального клиента скопируйте из этой памятки блок
-между `CODEX HANDOFF BEGIN` и `CODEX HANDOFF END` и передайте его агенту.
+Скрипт поддерживает чистый VPS и сервер, где Xray/VLESS уже установлен. По
+умолчанию `XRAY_CONFIG_MODE=auto`: установщик ищет `xray.service`, читает его
+`ExecStart`, парсит Xray JSON config и, если находит VLESS TCP inbound, сохраняет
+существующий Xray config/unit без перезаписи. UUID, listen/port,
+`streamSettings` и первый client подтягиваются из найденного inbound и попадают
+в итоговый handoff для локального клиента. Если Xray найден, но VLESS TCP inbound
+не распознан, `auto` останавливается и требует явного выбора вместо тихой замены.
+
+Если Xray/VLESS не найден, скрипт генерирует VLESS UUID, ставит недостающий Go
+toolchain и Xray из проверяемых архивов, собирает `vk-turn-proxy-server`, создает
+systemd units, стартует `$XRAY_SERVICE_NAME` и `vkturn-server.service`, открывает
+UDP-порт в активном `ufw`/`firewalld` если они включены, и печатает данные для
+локального клиента. Итоговая памятка сохраняется на сервере в
+`/root/vkturn-install-result.txt`. Для совместного тестирования локального
+клиента скопируйте из этой памятки блок между `CODEX HANDOFF BEGIN` и
+`CODEX HANDOFF END` и передайте его агенту.
+
+Режимы работы с Xray:
+
+```bash
+# default: импортировать существующий VLESS TCP inbound или создать managed config на чистом VPS
+XRAY_CONFIG_MODE=auto
+
+# строго требовать существующий VLESS TCP inbound и не писать Xray config/unit
+XRAY_CONFIG_MODE=preserve
+
+# явно заменить/создать managed Xray config/unit после подтверждения
+XRAY_CONFIG_MODE=replace
+```
+
+По умолчанию `UPDATE_XRAY=1`: Xray binary и `geoip.dat`/`geosite.dat`
+обновляются из official Xray release zip с проверкой `.dgst` SHA2-256. Перед
+заменой существующие файлы бэкапятся в `/var/backups/vk-turn-proxy/<timestamp>/`.
+Для уже установленного Xray скрипт перезапускает найденный `$XRAY_SERVICE_NAME`,
+чтобы новый binary реально вступил в силу; это можно отключить через
+`RESTART_XRAY=0`.
 
 Сухая проверка без изменения хоста:
 
 ```bash
 DRY_RUN=1 NONINTERACTIVE=1 ASSUME_YES=1 \
   SERVER_PUBLIC_ADDR=203.0.113.10 \
+  bash dev/scripts/install-linux-vless-server.sh
+```
+
+Сухая проверка с существующим Xray fixture:
+
+```bash
+rm -rf /tmp/vkturn-existing
+mkdir -p /tmp/vkturn-existing/etc/xray /tmp/vkturn-existing/etc/systemd/system /tmp/vkturn-existing/usr/local/bin
+cp dev/fixtures/xray/vless-tcp.json /tmp/vkturn-existing/etc/xray/config.json
+printf '[Service]\nExecStart=/usr/local/bin/xray run -config /etc/xray/config.json\n' \
+  >/tmp/vkturn-existing/etc/systemd/system/xray.service
+printf 'old xray\n' >/tmp/vkturn-existing/usr/local/bin/xray
+chmod +x /tmp/vkturn-existing/usr/local/bin/xray
+
+DRY_RUN_ROOT=/tmp/vkturn-existing DRY_RUN=1 NONINTERACTIVE=1 ASSUME_YES=1 \
+  SERVER_PUBLIC_ADDR=203.0.113.20 \
+  VK_LINK='https://vk.com/call/join/test' \
   bash dev/scripts/install-linux-vless-server.sh
 ```
 
@@ -646,10 +692,14 @@ go build -o ./dev/bin/vk-turn-proxy-client ./client
 ./dev/bin/vk-turn-proxy-client -peer <SERVER_IP>:56000 -vk-link '<VK_LINK>' -listen 127.0.0.1:9000 -vless
 ```
 
-В v2RayA добавьте локальный VLESS node на `127.0.0.1:9000` с тем же UUID,
-`encryption=none`, `network=tcp`, `security=none`. Для первых тестов v2RayA не
-нужно патчить: он выступает только как локальный Xray/VLESS UI, а туннель до VPS
-держит `vk-turn-proxy-client`.
+В v2RayA добавьте локальный VLESS node на `127.0.0.1:9000` с UUID и параметрами
+из блока `CODEX HANDOFF`. Для managed clean install это `encryption=none`,
+`network=tcp`, `security=none`. Если скрипт импортировал существующий inbound с
+TLS/REALITY или другими stream settings, используйте поля `VLESS_SECURITY`,
+`XRAY_STREAM_SETTINGS_B64` и `XRAY_CLIENT_B64` из handoff, чтобы зеркально
+перенести настройки в v2RayA. Для первых тестов v2RayA не нужно патчить: он
+выступает только как локальный Xray/VLESS UI, а туннель до VPS держит
+`vk-turn-proxy-client`.
 
 ### Сервер (VPS)
 ```
